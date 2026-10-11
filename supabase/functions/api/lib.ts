@@ -22,7 +22,7 @@ export const forbidden = (m = "You do not have permission for this action") => n
 export const notFound = (m = "Not found") => new HttpError(404, m);
 
 const DEFAULT_ORIGINS = [
-  "https://sdm-land-bank.github.io",
+  "https://sdm-sales-leads.github.io",
   "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173",
 ];
 export function allowedOrigins(): string[] {
