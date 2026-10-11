@@ -1,0 +1,222 @@
+export type LeadStatus = 
+  | 'New' 
+  | 'Assigned' 
+  | 'Contacted' 
+  | 'Follow Up' 
+  | 'Meeting Scheduled' 
+  | 'Negotiation' 
+  | 'Quotation Sent' 
+  | 'Waiting Customer' 
+  | 'Won' 
+  | 'Lost' 
+  | 'Duplicate' 
+  | 'Invalid' 
+  | 'No Answer' 
+  | 'Not Interested' 
+  | 'Closed';
+
+export type LostReason = 
+  | 'Not Interested' 
+  | 'Price' 
+  | 'Competitor' 
+  | 'Location' 
+  | 'Budget' 
+  | 'Project Size' 
+  | 'No Response' 
+  | 'Duplicate' 
+  | 'Cancelled' 
+  | 'Other';
+
+export type LeadPriority = 'Urgent' | 'High' | 'Normal' | 'Low';
+
+export interface CommentNote {
+  id: string;
+  date: string;
+  time: string;
+  user: string;
+  comment: string;
+  isPrivate: boolean;
+  attachmentName?: string;
+  voiceNoteUrl?: string;
+}
+
+export interface Attachment {
+  id: string;
+  name: string;
+  size: string;
+  uploadedAt: string;
+  uploadedBy: string;
+  dataUrl?: string;
+}
+
+export interface TimelineEvent {
+  id: string;
+  timestamp: string;
+  type: 'Call' | 'Email' | 'Meeting' | 'Visit' | 'WhatsApp' | 'SMS' | 'Comment' | 'Status Change' | 'Assignment' | 'Approval' | 'Creation' | 'Import';
+  user: string;
+  title: string;
+  description: string;
+}
+
+export interface Lead {
+  emailId?: string;
+  id: string; // SL-XXXX
+  date: string;
+  source: string;
+  project: string;
+  customerName: string;
+  phoneNumber: string; // Normalized
+  email: string;
+  companyName?: string;
+  requiredSize: string | number; // sqm
+  budget?: number; // USD or EGP (Optional)
+  slaStatus?: string; // Within SLA, Violated, Met, etc.
+  priority: LeadPriority;
+  status: LeadStatus;
+  assignedSalespersonId?: string;
+  assignedSalespersonName?: string;
+  assignedDate?: string;
+  lastUpdated: string;
+  expectedClosingDate: string;
+  description: string;
+  comments: CommentNote[];
+  attachments: Attachment[];
+  lostReason?: LostReason;
+  lostComment?: string;
+  timeline: TimelineEvent[];
+  slaDeadline?: string; // ISO string
+  nextFollowUpDate?: string; // YYYY-MM-DD
+}
+
+export interface ContactEditLog {
+  id: string;
+  timestamp: string;
+  user: string;
+  field: string;
+  from: string;
+  to: string;
+}
+
+export interface Contact {
+  id: string;
+  serialNumber?: string;
+  name: string;
+  phoneNumber: string; // Normalized (primary key equivalent)
+  alternativeNumber?: string;
+  email: string;
+  company?: string;
+  jobTitle?: string;
+  department?: string;
+  industry?: string;
+  address?: string;
+  city?: string;
+  country?: string;
+  nationality?: string;
+  preferredLanguage: 'English' | 'Arabic';
+  preferredCommunication: 'WhatsApp' | 'Email' | 'Call' | 'SMS';
+  createdDate: string;
+  createdBy: string;
+  status: 'Active' | 'Inactive';
+  lastContactDate?: string;
+  editLogs?: ContactEditLog[];
+}
+
+export interface Company {
+  id: string;
+  name: string;
+  industry?: string;
+  commercialRegistration?: string;
+  taxNumber?: string;
+  address?: string;
+  city?: string;
+  website?: string;
+  assignedAccountManager?: string;
+}
+
+export interface EmailImportLog {
+  id: string;
+  receivedTime: string;
+  sender: string;
+  subject: string;
+  status: 'Success' | 'Error' | 'Failed' | 'Duplicate' | 'Deleted';
+  error?: string;
+  parsedLeadId?: string;
+  bodyPreview: string;
+}
+
+export type AssignmentMethod = 
+  | 'Round Robin'
+  | 'Least Active Leads'
+  | 'Least Total Leads'
+  | 'Random'
+  | 'Project Based'
+  | 'Required Size'
+  | 'Lead Source'
+  | 'Priority Based'
+  | 'Working Hours'
+  | 'VIP Customer Routing'
+  | 'Company Industry Routing'
+  | 'Manual Assignment Only';
+
+export interface QueueSettings {
+  canonicalProjects?: string[];
+  canonicalLeadSources?: string[];
+  assignmentMethod: AssignmentMethod;
+  queueOrder: 'FIFO' | 'LIFO' | 'Priority';
+  enableRoundRobin: boolean;
+  enableProjectRouting: boolean;
+  enableSizeRouting: boolean;
+  enablePriorityRouting: boolean;
+  maxLeadsPerSalesperson: number;
+  maxDailyAssignment: number;
+  skipUsersOnLeave: boolean;
+  skipDisabledUsers: boolean;
+  skipInactiveUsers: boolean;
+  autoReassignAfterDays: number;
+  autoEscalation: boolean;
+  businessHoursStart: string; // e.g., "08:00"
+  businessHoursEnd: string; // e.g., "17:00"
+  backupSalespersonId?: string;
+  enableOverflowQueue: boolean;
+}
+
+export interface SalespersonActivity {
+  id: string;
+  salespersonId: string;
+  salespersonName: string;
+  type: 'Call' | 'Email' | 'WhatsApp' | 'Meeting' | 'Visit';
+  leadId: string;
+  leadName: string;
+  timestamp: string;
+  notes: string;
+}
+
+export interface SalespersonTask {
+  id: string;
+  salespersonId: string;
+  title: string;
+  description: string;
+  dueDate: string;
+  status: 'Pending' | 'Completed';
+  priority: 'High' | 'Medium' | 'Low';
+  leadId?: string;
+}
+
+export interface PlotRecord {
+  id: string | number;
+  projectName: string;
+  landType: string;
+  status: string;
+  sector: string;
+  areaSqM: number;
+  unitCode: string;
+  clientName: string;
+  companyName: string;
+  salesContractDate: string;
+  yearOfSale: string;
+  rfPrice: string;
+  cashValue: string;
+  quarterOfSale?: string;
+  salesRep?: string;
+  leadSource?: string;
+}

@@ -1,0 +1,137 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&family=JetBrains+Mono:wght@400;500;700&family=Playfair+Display:wght@400;500;700&display=swap');
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+@custom-variant dark (&:is(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --radius-2xl: 1rem;
+  --color-brand-red: #A6192E;
+  --color-brand-black: #2D2926;
+  --color-brand-gray: #767676;
+  --color-brand-light: #F2F2F2;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-brand-light, #F2F2F2);
+  }
+
+  html.dark {
+    background-color: var(--color-brand-black, #191715);
+  }
+
+  body {
+    @apply font-sans text-brand-black min-h-screen transition-colors duration-300;
+    background-color: transparent !important;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(166, 25, 46, 0.05) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(45, 41, 38, 0.05) 0px, transparent 50%);
+    background-attachment: fixed;
+  }
+
+  .dark body {
+    @apply text-white;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(166, 25, 46, 0.15) 0px, transparent 50%),
+      radial-gradient(at 100% 0%, rgba(25, 23, 21, 0.3) 0px, transparent 50%);
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply backdrop-blur-sm border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.07)] will-change-[backdrop-filter];
+    background-color: rgba(255, 255, 255, var(--glass-opacity, 0.7));
+  }
+
+  .bento-card {
+    @apply backdrop-blur-sm border border-white/20 shadow-[0_8px_32px_0_rgba(31,38,135,0.07)] rounded-2xl p-6 transition-all duration-300 hover:shadow-[0_8px_32px_0_rgba(31,38,135,0.15)] hover:-translate-y-0.5 will-change-[backdrop-filter,transform];
+    background-color: rgba(255, 255, 255, var(--glass-opacity, 0.7));
+  }
+
+  .glass-mode .bento-card, .glass-mode .glass-panel {
+    @apply border-white/30;
+    background-color: rgba(255, 255, 255, 0.4) !important;
+  }
+
+  .dark .bento-card, .dark .glass-panel {
+    @apply border-white/5 text-white;
+    background-color: rgba(25, 23, 21, 0.65) !important;
+  }
+
+  .dark .input-field {
+    @apply bg-white/5 border-white/10 text-white focus:bg-white/10;
+  }
+
+  .dark .btn-secondary {
+    @apply bg-white/10 border-white/10 text-white hover:bg-white/20;
+  }
+
+  .dark .text-brand-black {
+    @apply text-white;
+  }
+
+  .dark .text-brand-gray {
+    @apply text-white/60;
+  }
+
+  .btn-primary {
+    @apply bg-brand-red text-white px-4 py-2 rounded-xl font-bold hover:opacity-90 transition-all disabled:opacity-50 shadow-lg shadow-brand-red/20 active:scale-95;
+  }
+
+  .btn-secondary {
+    @apply bg-white/50 backdrop-blur-sm border border-brand-black/10 text-brand-black px-4 py-2 rounded-xl font-bold hover:bg-white/80 transition-all active:scale-95;
+  }
+
+  .input-field {
+    @apply w-full px-4 py-2 rounded-xl border border-brand-black/5 bg-white/50 backdrop-blur-sm focus:outline-none focus:ring-2 focus:ring-brand-red/20 focus:border-brand-red/50 focus:bg-white/80 transition-all;
+  }
+
+  .glass-sidebar {
+    @apply bg-brand-black/90 backdrop-blur-md border-r border-white/10 will-change-[backdrop-filter];
+  }
+
+  .clip-path-star {
+    clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+  }
+
+  .clip-path-tie {
+    clip-path: polygon(0% 0%, 100% 0%, 100% 70%, 50% 100%, 0% 70%);
+  }
+}
+
+
+/* Modern Custom Scrollbar (iOS/Mac Style) */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* For sidebar specifically if it has a dark bg */
+.glass-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+.glass-sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}

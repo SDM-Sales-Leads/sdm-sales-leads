@@ -1,0 +1,215 @@
+import React, { useState, useEffect } from 'react';
+import { AuthProvider, useAuth } from './services/AuthContext';
+import { ThemeProvider, useTheme } from './services/ThemeContext';
+import { Toaster } from 'sonner';
+import { Login } from './components/Login';
+import { ChangePassword } from './components/ChangePassword';
+import { Sidebar } from './components/Sidebar';
+import { Dashboard } from './components/Dashboard';
+import { TicketList } from './components/TicketList';
+import { TicketDetail } from './components/TicketDetail';
+import { TicketForm } from './components/TicketForm';
+import { AdminPanel } from './components/AdminPanel';
+import { KnowledgeBase } from './components/KnowledgeBase';
+import { SystemHealth } from './components/SystemHealth';
+import { WorkflowSLAAlignment } from './components/WorkflowSLAAlignment';
+import { SalesCrmModule } from './components/crm/SalesCrmModule';
+import { AnimatedBackground } from './components/AnimatedBackground';
+import { ticketService } from './services/ticketService';
+import { Ticket as TicketType } from './types';
+import { motion, AnimatePresence } from 'motion/react';
+
+import { Menu } from 'lucide-react';
+import { Logo } from './constants';
+
+const AppContent: React.FC = () => {
+  const { user, isLoading, mustChangePassword } = useAuth();
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [crmSubTab, setCrmSubTab] = useState('dashboard');
+  const [tickets, setTickets] = useState<TicketType[]>([]);
+  const [selectedTicket, setSelectedTicket] = useState<TicketType | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      loadTickets();
+      // Set default tab based on role
+      if (user.role === 'Requester') {
+        setActiveTab('tickets');
+      }
+
+      // Cost-efficient sync: Refresh when user returns to the tab
+      // This is "zero cost" when the app is in the background
+      const handleFocus = () => {
+        loadTickets();
+      };
+      
+      window.addEventListener('focus', handleFocus);
+      return () => window.removeEventListener('focus', handleFocus);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user && tickets.length > 0) {
+      const params = new URLSearchParams(window.location.search);
+      const ticketId = params.get('ticketId');
+      if (ticketId) {
+        const ticket = tickets.find(t => String(t.id) === ticketId);
+        if (ticket) {
+          setSelectedTicket(ticket);
+          // Clear the URL parameter without reloading
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+      }
+    }
+  }, [user, tickets]);
+
+  const loadTickets = async () => {
+    try {
+      const allTickets = await ticketService.getTickets();
+      if (!user) {
+        setTickets([]);
+        return allTickets;
+      }
+
+      let filtered;
+      if (user.role === 'Admin') {
+        filtered = allTickets;
+      } else if (user.role === 'Requester') {
+        filtered = allTickets.filter(t => t.requesterId === user.id);
+      } else {
+        filtered = allTickets.filter(t => 
+          t.requesterId === user.id || 
+          t.assignedTo === user.id || 
+          !t.department || 
+          t.department === user.department ||
+          (t.workflowSteps?.some(s => s.status === 'Current' && s.responsibleRole === user.department))
+        );
+      }
+      setTickets(filtered);
+      return filtered;
+    } catch (err) {
+      console.warn("Failed to load tickets:", err);
+      return [];
+    }
+  };
+
+  const handleTicketSelect = (ticket: TicketType) => {
+    setSelectedTicket(ticket);
+  };
+
+  const handleTicketUpdate = async () => {
+    const updatedTickets = await loadTickets();
+    if (selectedTicket) {
+      const updated = updatedTickets.find(t => t.id === selectedTicket.id);
+      setSelectedTicket(updated || null);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center relative">
+        <AnimatedBackground />
+        <div className="flex flex-col items-center gap-4 z-10">
+          <div className="w-12 h-12 border-4 border-brand-red border-t-transparent rounded-full animate-spin" />
+          <p className="font-bold text-brand-black">Initializing Service Desk...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Login />;
+  }
+  if (mustChangePassword) {
+    return <ChangePassword />;
+  }
+
+  return (
+    <div className="flex h-screen overflow-hidden relative">
+      <AnimatedBackground />
+      
+      <div className="flex flex-1 h-screen overflow-hidden z-10">
+        <Sidebar 
+          activeTab={activeTab} 
+          setActiveTab={(tab) => {
+            setActiveTab(tab);
+            setSelectedTicket(null);
+          }} 
+          crmSubTab={crmSubTab}
+          setCrmSubTab={setCrmSubTab}
+          isOpen={isSidebarOpen}
+          setIsOpen={setIsSidebarOpen}
+        />
+        
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Mobile Header */}
+          <header className="lg:hidden bg-brand-black text-white px-4 py-2 flex items-center justify-between sticky top-0 z-30">
+            <div className="flex flex-col items-center">
+              <Logo height="h-12" />
+              <span className="font-bold text-[10px] text-white/90 tracking-wider uppercase">W-CRM</span>
+            </div>
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 hover:bg-white/10 rounded-lg"
+            >
+              <Menu size={24} />
+            </button>
+          </header>
+
+          <main className="flex-1 p-4 md:p-8 overflow-y-auto">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={selectedTicket ? `detail-${selectedTicket.id}` : activeTab}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.2 }}
+              >
+                {selectedTicket ? (
+                  <TicketDetail 
+                    ticket={selectedTicket} 
+                    onBack={() => setSelectedTicket(null)} 
+                    onUpdate={handleTicketUpdate}
+                  />
+                ) : (
+                  <>
+                    {activeTab === 'dashboard' && <Dashboard tickets={tickets} />}
+                    {activeTab === 'sales-crm' && (
+                      <SalesCrmModule 
+                        activeSubTab={crmSubTab} 
+                        setActiveSubTab={setCrmSubTab} 
+                      />
+                    )}
+                    {activeTab === 'tickets' && <TicketList tickets={tickets} onSelect={handleTicketSelect} />}
+                    {activeTab === 'new-ticket' && (
+                      <TicketForm onSuccess={() => {
+                        loadTickets();
+                        setActiveTab('tickets');
+                      }} />
+                    )}
+                    {activeTab === 'kb' && <KnowledgeBase />}
+                    {activeTab === 'health' && <SystemHealth />}
+                    {activeTab === 'workflow-sla' && <WorkflowSLAAlignment />}
+                    {activeTab === 'admin' && <AdminPanel />}
+                  </>
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </main>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ThemeProvider>
+        <AppContent />
+        <Toaster position="bottom-right" />
+      </ThemeProvider>
+    </AuthProvider>
+  );
+}

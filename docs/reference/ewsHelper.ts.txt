@@ -1,0 +1,113 @@
+export async function sendEmailViaEWS(config: any, mailOptions: any): Promise<any> {
+  // Use the native fetch API
+  const url = `https://${config.host}/EWS/Exchange.asmx`;
+  const auth = Buffer.from(`${config.user}:${config.pass}`).toString('base64');
+  
+  const toEmails = Array.isArray(mailOptions.to) ? mailOptions.to : [mailOptions.to];
+  
+  let toRecipientsXml = '';
+  for (const email of toEmails) {
+    toRecipientsXml += `
+            <t:Mailbox>
+              <t:EmailAddress>${email}</t:EmailAddress>
+            </t:Mailbox>`;
+  }
+
+  const soapRequest = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016" />
+  </soap:Header>
+  <soap:Body>
+    <m:CreateItem MessageDisposition="SendAndSaveCopy">
+      <m:SavedItemFolderId>
+        <t:DistinguishedFolderId Id="sentitems" />
+      </m:SavedItemFolderId>
+      <m:Items>
+        <t:Message>
+          <t:Subject>${mailOptions.subject}</t:Subject>
+          <t:Body BodyType="${mailOptions.html ? 'HTML' : 'Text'}"><![CDATA[${mailOptions.html || mailOptions.text}]]></t:Body>
+          <t:ToRecipients>
+            ${toRecipientsXml}
+          </t:ToRecipients>
+        </t:Message>
+      </m:Items>
+    </m:CreateItem>
+  </soap:Body>
+</soap:Envelope>`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/xml; charset=utf-8',
+      'Authorization': `Basic ${auth}`
+    },
+    body: soapRequest
+  });
+
+  const text = await res.text();
+  
+  if (!res.ok) {
+    throw new Error(`EWS Error (${res.status}): ${text.substring(0, 200)}`);
+  }
+  
+  if (text.includes('ResponseClass="Error"')) {
+    const errorMatch = text.match(/<m:MessageText>(.*?)<\/m:MessageText>/);
+    const errorMsg = errorMatch ? errorMatch[1] : 'Unknown EWS Error';
+    throw new Error(`EWS API Error: ${errorMsg}`);
+  }
+  
+  return { messageId: 'ews-sent-' + Date.now(), response: '250 EWS Success' };
+}
+
+export async function verifyEWS(config: any): Promise<{ verified: boolean, error: string | null, logs: string[] }> {
+  try {
+    const url = `https://${config.host}/EWS/Exchange.asmx`;
+    const auth = Buffer.from(`${config.user}:${config.pass}`).toString('base64');
+    
+    const soapRequest = `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+               xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Header>
+    <t:RequestServerVersion Version="Exchange2016" />
+  </soap:Header>
+  <soap:Body>
+    <m:ResolveNames ReturnFullContactData="true">
+      <m:UnresolvedEntry>${config.user}</m:UnresolvedEntry>
+    </m:ResolveNames>
+  </soap:Body>
+</soap:Envelope>`;
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/xml; charset=utf-8',
+        'Authorization': `Basic ${auth}`
+      },
+      body: soapRequest
+    });
+
+    const text = await res.text();
+    
+    if (!res.ok) {
+      if (res.status === 401) {
+        return { verified: false, error: 'EWS Authentication Failed: Invalid Username or Password', logs: [`HTTP 401 Unauthorized`] };
+      }
+      return { verified: false, error: `EWS HTTP Error ${res.status}`, logs: [text.substring(0, 100)] };
+    }
+    
+    if (text.includes('ResponseClass="Error"')) {
+      const errorMatch = text.match(/<m:MessageText>(.*?)<\/m:MessageText>/);
+      return { verified: false, error: `EWS Error: ${errorMatch ? errorMatch[1] : 'Unknown'}`, logs: [] };
+    }
+    
+    return { verified: true, error: null, logs: ['EWS Authenticated successfully!', `Host: ${config.host}`] };
+  } catch (err: any) {
+    return { verified: false, error: `EWS Connection failed: ${err.message}`, logs: [err.message] };
+  }
+}
