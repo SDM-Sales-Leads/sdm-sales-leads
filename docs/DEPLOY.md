@@ -10,7 +10,7 @@
 6. **First administrator**: Authentication → Users → Add user (e-mail + password you choose, "Auto Confirm User"),
    then run `supabase/bootstrap_admin.sql` (edit the e-mail first).
 7. **Site**: push this repo to GitHub, Settings → Pages → Source: **GitHub Actions**. The workflow builds and publishes.
-8. **Allowed origin**: the function accepts browser calls only from `https://sdm-land-bank.github.io` and local dev.
+8. **Allowed origin**: the function accepts browser calls only from `https://sdm-sales-leads.github.io` and local dev.
    Another host? Set the function secret `ALLOWED_ORIGINS` (comma-separated).
 9. **In the app (Admin → System)**: mailbox host / user / password (Exchange), optional Gemini key. Then add users.
 
