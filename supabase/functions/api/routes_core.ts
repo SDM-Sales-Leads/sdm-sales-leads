@@ -463,7 +463,7 @@ route("POST", "/notify", async ({ req, c }) => {
   const subject = str(b.subject, 150).replace(/[\r\n]+/g, " ") || `Ticket ${ticketId} update`;
   const action = str(b.action, 120);
   const text = str(b.body, 4000);
-  const appUrl = (await getConfig<any>("app", {})).url || Deno.env.get("APP_URL") || "https://sdm-sales-leads.github.io/";
+  const appUrl = (await getConfig<any>("app", {})).url || Deno.env.get("APP_URL") || "https://sdm-sales-leads.github.io/sdm-sales-leads/";
   const link = `${String(appUrl).replace(/\/$/, "")}/?ticketId=${ticketId}`;
   const html = `<div style="font-family:Segoe UI,Tahoma,Arial,sans-serif;background:#f9f9f9;padding:0;margin:0">
 <div style="max-width:600px;margin:20px auto;background:#fff;border:1px solid #e1e1e1;border-radius:8px;overflow:hidden">
