@@ -163,7 +163,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
   }, []);
 
   // Email simulator input
-  const sender = 'noreply@elsewedy.com';
+  const sender = '—';
   const subject = 'Inbound Email Sales Inquiry';
   const [emailBody, setEmailBody] = useState('');
 
@@ -264,7 +264,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
           <div className="min-w-0 flex-1">
             <h4 className="font-bold text-brand-black flex items-center gap-2 flex-wrap text-sm sm:text-base">
               <Mail className="text-brand-red shrink-0" size={18} />
-              <span className="truncate max-w-full block break-all">Noreply.SDM_WCRM@elsewedy.com Webmail</span>
+              <span className="truncate max-w-full block break-all">Sales mailbox</span>
             </h4>
             <p className="text-xs text-brand-gray mt-1">Direct IMAP/SMTP connection monitor.</p>
           </div>

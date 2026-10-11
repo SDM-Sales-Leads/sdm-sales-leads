@@ -1545,7 +1545,7 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
                     type="email"
                     value={editContactForm.email}
                     onChange={(e) => setEditContactForm({ ...editContactForm, email: e.target.value })}
-                    placeholder="e.g., contact@elsewedy.com"
+                    placeholder="name@company.com"
                     className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none"
                   />
                 </div>
