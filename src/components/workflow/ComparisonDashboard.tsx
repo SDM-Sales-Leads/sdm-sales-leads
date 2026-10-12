@@ -169,7 +169,7 @@ export const ComparisonDashboard: React.FC<ComparisonDashboardProps> = ({ reques
             </div>
           </div>
           <div className="text-xs text-brand-gray relative z-10">
-            Target: 100% before CRM implementation
+            Target: every workflow aligned or finalized
           </div>
         </div>
       </div>

@@ -191,7 +191,7 @@ export const WorkflowExportTemplate: React.FC<WorkflowExportTemplateProps> = ({
       <div className="pt-4 border-t-2 border-[#E5E5E5] flex justify-between items-center mt-6">
         <div className="flex flex-col gap-0.5">
           <div className="text-[10px] font-bold text-[#767676] uppercase tracking-[0.2em]">
-            W-CRM Help Desk • Standard Operating Procedure • {new Date().getFullYear()}
+            SDM Service Desk • Standard Operating Procedure • {new Date().getFullYear()}
           </div>
           <div className="text-[9px] font-medium text-[#999999] uppercase tracking-widest">
             Detailed Step Analysis

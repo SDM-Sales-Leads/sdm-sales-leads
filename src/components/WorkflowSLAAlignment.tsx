@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   BarChart3, 
   List, 
@@ -6,25 +6,17 @@ import {
   GitBranch, 
   LayoutDashboard, 
   Building2, 
-  Search, 
-  Filter, 
-  ArrowRight, 
-  ChevronRight,
-  TrendingUp,
   AlertTriangle,
-  CheckCircle2,
-  Clock,
-  Layers,
-  Share2,
-  FileText,
-  Download,
-  AlertCircle
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { useAuth } from '../services/AuthContext';
-import { WorkflowRequest, Role, Department } from '../types';
+import { WorkflowRequest } from '../types';
 import { workflowService } from '../services/workflowService';
+import { refData, useRefStore } from '../services/refData';
+import { useWorkflowAccess } from './workflow/access';
+import { stepsHours } from './workflow/sla';
 
 // Sub-components
 import { WorkflowDashboard } from './workflow/WorkflowDashboard';
@@ -37,41 +29,27 @@ type ViewState = 'dashboard' | 'list' | 'create' | 'edit' | 'detail' | 'comparis
 
 export const WorkflowSLAAlignment: React.FC = () => {
   const { user, permissions } = useAuth();
+  const { isAdmin, canCreate, canEditFor } = useWorkflowAccess();
   const [activeView, setActiveView] = useState<ViewState>('dashboard');
-  const [requests, setRequests] = useState<WorkflowRequest[]>([]);
-  const [selectedRequest, setSelectedRequest] = useState<WorkflowRequest | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // The list comes from the shared cache: instant when it is warm (prefetched or visited before), refreshed quietly
+  // when older than 2 minutes. Saves below update the same cache, so every screen sees them at once.
+  const wf = useRefStore(refData.workflows);
+  const requests = useMemo<WorkflowRequest[]>(() => wf.data ?? [], [wf.data]);
+  const selectedRequest = useMemo(() => (selectedId ? requests.find(r => r.id === selectedId) ?? null : null), [requests, selectedId]);
+  const showRequest = (req: WorkflowRequest) => { setSelectedId(req.id); setActiveView('detail'); };
+  const editRequest = (req: WorkflowRequest) => { setSelectedId(req.id); setActiveView('edit'); };
 
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [isDeleteLoading, setIsDeleteLoading] = useState(false);
 
-  const isAdmin = user?.role?.toLowerCase()?.includes('admin') || false;
   const isDeptHead = user?.role?.toLowerCase()?.includes('head') || false;
-  const isSales = user?.role?.toLowerCase()?.includes('sales') || false;
 
-  const canCreate = isAdmin || (permissions?.canCreateWorkflow === true && (
-    !permissions.allowedDepartmentsToCreate || 
-    permissions.allowedDepartmentsToCreate.length === 0 ||
-    !user?.department ||
-    permissions.allowedDepartmentsToCreate.some(d => d?.toLowerCase() === user.department?.toLowerCase())
-  ));
-
-  const canApprove = isAdmin || (permissions?.canApproveWorkflow === true && (
-    !permissions.allowedDepartmentsToApprove || 
-    permissions.allowedDepartmentsToApprove.length === 0 ||
-    !user?.department ||
-    permissions.allowedDepartmentsToApprove.some(d => d?.toLowerCase() === user.department?.toLowerCase())
-  ));
-
+  // Leave the edit form when the user may not edit this workflow (state change belongs in an effect, not in render)
   useEffect(() => {
-    fetchRequests();
-  }, []);
-
-  // Leave the edit form when the user may not edit (state change belongs in an effect, not in render)
-  useEffect(() => {
-    if (activeView === 'edit' && !permissions?.canEditWorkflow) setActiveView('list');
-  }, [activeView, permissions?.canEditWorkflow]);
+    if (activeView === 'edit' && selectedRequest && !canEditFor(selectedRequest.department)) setActiveView('list');
+  }, [activeView, selectedRequest, canEditFor]);
 
   // Escape closes the delete dialog
   useEffect(() => {
@@ -81,24 +59,9 @@ export const WorkflowSLAAlignment: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, [isDeleting, isDeleteLoading]);
 
-  const fetchRequests = async () => {
-    try {
-      setLoading(true);
-      const data = await workflowService.getAll();
-      setRequests(Array.isArray(data) ? data : []);
-      setError(null);
-    } catch (err) {
-      setError('Failed to fetch workflow requests');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const handleCreate = async (data: Partial<WorkflowRequest>) => {
     try {
-      const newRequest = await workflowService.create(data as Omit<WorkflowRequest, 'id' | 'createdAt' | 'updatedAt'>);
-      setRequests(prev => [...prev, newRequest]);
+      await workflowService.create(data);
       setActiveView('list');
     } catch (err: any) {
       console.error('Failed to create request:', err);
@@ -108,74 +71,75 @@ export const WorkflowSLAAlignment: React.FC = () => {
   };
 
   const handleUpdate = async (id: string, data: Partial<WorkflowRequest>) => {
+    const current = requests.find(r => r.id === id);
+    if (!canEditFor(current?.department)) {
+      toast.error('You do not have permission to edit this workflow.');
+      return;
+    }
     try {
-      if (!permissions?.canEditWorkflow) {
-        console.error('Unauthorized update attempt');
-        toast.error('You do not have permission to edit this workflow.');
-        return;
-      }
-
-      // Optimistic update
-      setRequests(prev => prev.map(r => r.id === id ? { ...r, ...data } as WorkflowRequest : r));
-      if (selectedRequest?.id === id) setSelectedRequest(prev => prev ? { ...prev, ...data } as WorkflowRequest : null);
-      
-      const updated = await workflowService.update(id, data);
-      
-      // Sync with server result
-      setRequests(prev => prev.map(r => r.id === id ? updated : r));
-      if (selectedRequest?.id === id) setSelectedRequest(updated);
-      
-      // Only navigate if we are in 'edit' view (the form)
-      if (activeView === 'edit') {
-        setActiveView('list');
-      }
+      // the stored total SLA decides the deadline of tickets made from this workflow: keep it equal to the steps
+      const body = data.steps ? { ...data, totalSLA: stepsHours(data.steps) } : data;
+      await workflowService.update(id, body); // the cache is updated with the server's answer
+      if (activeView === 'edit') setActiveView('list'); // only the edit form closes after saving
     } catch (err: any) {
       console.error('Failed to update request:', err);
       toast.error(err?.message || 'Failed to update workflow. Please try again.');
-      // Revert on error (re-fetch)
-      fetchRequests();
       throw err;
     }
   };
 
+  // Steps edited on the detail page (canvas: every typed letter changes them): shown at once from the cache, saved
+  // once the user pauses (700 ms), one request at a time, the latest version wins.
+  const pendingSteps = useRef<{ id: string; steps: WorkflowRequest['steps']; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const savingSteps = useRef<Promise<unknown>>(Promise.resolve());
+  const flushSteps = () => {
+    const p = pendingSteps.current;
+    if (!p) return;
+    clearTimeout(p.timer);
+    pendingSteps.current = null;
+    savingSteps.current = savingSteps.current.then(async () => {
+      try {
+        await workflowService.update(p.id, { steps: p.steps, totalSLA: stepsHours(p.steps) }, { quiet: true });
+      } catch (err: any) {
+        toast.error(err?.message || 'Could not save the workflow steps.');
+        refData.workflows.invalidate(); // show what the server really has
+      }
+    });
+  };
+  const saveSteps = (id: string, steps: WorkflowRequest['steps']) => {
+    const current = requests.find(r => r.id === id);
+    if (!canEditFor(current?.department)) { toast.error('You do not have permission to edit this workflow.'); return; }
+    refData.workflows.set(prev => (prev || []).map(r => (r.id === id ? { ...r, steps, totalSLA: stepsHours(steps) } : r)));
+    if (pendingSteps.current && pendingSteps.current.id !== id) flushSteps();
+    if (pendingSteps.current) clearTimeout(pendingSteps.current.timer);
+    pendingSteps.current = { id, steps, timer: setTimeout(flushSteps, 700) };
+  };
+  // leaving the page or the detail view: save what is waiting
+  useEffect(() => { if (activeView !== 'detail') flushSteps(); }, [activeView]);
+  useEffect(() => () => flushSteps(), []);
+
   const handleDelete = async (id: string) => {
     try {
       setIsDeleteLoading(true);
-      const request = requests.find(r => r.id === id);
-      if (!isAdmin && (user?.id == null || String(request?.createdBy) !== String(user.id))) {
-        console.error('Unauthorized delete attempt');
-        toast.error('Only the creator or an administrator can delete this workflow.');
-        setIsDeleting(null);
-        setIsDeleteLoading(false);
-        return;
-      }
-
-      await workflowService.delete(id, user?.id != null ? String(user.id) : undefined, user?.name);
-      setRequests(prev => prev.filter(r => r.id !== id));
+      await workflowService.delete(id);
       setIsDeleting(null);
-      setIsDeleteLoading(false);
+      setSelectedId(null);
       setActiveView('list');
       toast.success('Workflow deleted');
     } catch (err: any) {
       console.error('Failed to delete request:', err);
       toast.error(err?.message || 'Failed to delete workflow.');
       setIsDeleting(null);
+    } finally {
       setIsDeleteLoading(false);
     }
   };
 
   const handleDuplicate = async (request: WorkflowRequest) => {
     try {
-      // Need to clean the object to create a new one: remove ID, dates, user
-      const { id, createdAt, updatedAt, createdBy, createdByName, ...dataToDuplicate } = request;
-      const duplicatedData = {
-        ...dataToDuplicate,
-        title: `${request.title} (Copy)`,
-        status: 'Draft' as const
-      };
-      
-      const newRequest = await workflowService.create(duplicatedData);
-      setRequests(prev => [...prev, newRequest]);
+      // a copy starts fresh: no id, dates, owner, feedback or visibility setting, and is always a draft
+      const { id, createdAt, updatedAt, createdBy, createdByName, salesFeedback, isHidden, ...dataToDuplicate } = request;
+      await workflowService.create({ ...dataToDuplicate, title: `${request.title} (Copy)`, status: 'Draft' });
       toast.success('Workflow duplicated as a draft');
     } catch (err: any) {
       console.error('Failed to duplicate request:', err);
@@ -185,10 +149,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
 
   const handleToggleVisibility = async (request: WorkflowRequest) => {
     try {
-      const updatedData = { isHidden: !request.isHidden };
-      const updated = await workflowService.update(request.id, updatedData);
-      setRequests(prev => prev.map(r => r.id === request.id ? updated : r));
-      if (selectedRequest?.id === request.id) setSelectedRequest(updated);
+      await workflowService.update(request.id, { isHidden: !request.isHidden });
     } catch (err: any) {
       console.error('Failed to toggle visibility:', err);
       toast.error(err?.message || 'Failed to change visibility.');
@@ -197,9 +158,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
 
   const handleStatusChange = async (id: string, status: WorkflowRequest['status']) => {
     try {
-      const updated = await workflowService.update(id, { status });
-      setRequests(prev => prev.map(r => r.id === id ? updated : r));
-      if (selectedRequest?.id === id) setSelectedRequest(updated);
+      await workflowService.update(id, { status });
     } catch (err: any) {
       console.error('Failed to update status:', err);
       toast.error(err?.message || 'Failed to update status.');
@@ -208,9 +167,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
 
   const handleAddFeedback = async (id: string, feedback: { recommendedSLA: number; businessJustification: string }) => {
     try {
-      const updated = await workflowService.update(id, { salesFeedback: feedback });
-      setRequests(prev => prev.map(r => r.id === id ? updated : r));
-      if (selectedRequest?.id === id) setSelectedRequest(updated);
+      await workflowService.update(id, { salesFeedback: feedback });
     } catch (err: any) {
       console.error('Failed to add feedback:', err);
       toast.error(err?.message || 'Failed to save feedback.');
@@ -225,8 +182,8 @@ export const WorkflowSLAAlignment: React.FC = () => {
         return (
           <WorkflowList 
             requests={requests} 
-            onView={(req) => { setSelectedRequest(req); setActiveView('detail'); }}
-            onEdit={(req) => { setSelectedRequest(req); setActiveView('edit'); }}
+            onView={showRequest}
+            onEdit={editRequest}
             onDelete={(id) => setIsDeleting(id)}
             onDuplicate={handleDuplicate}
             onToggleVisibility={handleToggleVisibility}
@@ -241,7 +198,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
         );
       case 'edit':
         if (!selectedRequest) return null;
-        if (!permissions?.canEditWorkflow) return null; // effect above redirects to the list
+        if (!canEditFor(selectedRequest.department)) return null; // effect above redirects to the list
 
         return (
           <WorkflowForm 
@@ -255,9 +212,9 @@ export const WorkflowSLAAlignment: React.FC = () => {
           <WorkflowDetail 
             request={selectedRequest}
             onBack={() => setActiveView('list')}
-            onEdit={(req) => { setSelectedRequest(req); setActiveView('edit'); }}
+            onEdit={editRequest}
             onDelete={(id) => setIsDeleting(id)}
-            onUpdate={(updatedReq) => handleUpdate(updatedReq.id, updatedReq)}
+            onUpdate={(updatedReq) => saveSteps(updatedReq.id, updatedReq.steps)}
             onStatusChange={handleStatusChange}
             onAddFeedback={handleAddFeedback}
           />
@@ -266,7 +223,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
         return (
           <ComparisonDashboard 
             requests={requests} 
-            onViewRequest={(req) => { setSelectedRequest(req); setActiveView('detail'); }}
+            onViewRequest={showRequest}
           />
         );
       case 'my-department':
@@ -274,8 +231,8 @@ export const WorkflowSLAAlignment: React.FC = () => {
         return (
           <WorkflowList 
             requests={deptRequests} 
-            onView={(req) => { setSelectedRequest(req); setActiveView('detail'); }}
-            onEdit={(req) => { setSelectedRequest(req); setActiveView('edit'); }}
+            onView={showRequest}
+            onEdit={editRequest}
             onDelete={(id) => setIsDeleting(id)}
             onDuplicate={handleDuplicate}
             onToggleVisibility={handleToggleVisibility}
@@ -287,7 +244,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-brand-gray/5 p-8">
+    <div className="min-h-screen bg-brand-gray/5 p-4 md:p-8">
       {/* Module Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12">
         <div className="space-y-1">
@@ -296,7 +253,7 @@ export const WorkflowSLAAlignment: React.FC = () => {
             Enterprise Alignment
           </div>
           <h1 className="text-4xl font-bold text-brand-black tracking-tight">Workflow & SLA Alignment</h1>
-          <p className="text-brand-gray text-sm">Define, review, and align departmental workflows before CRM implementation.</p>
+          <p className="text-brand-gray text-sm">Define each department's process and its SLA, review it with the team and finalize it. Finalized workflows can be chosen as a template when a ticket is created.</p>
         </div>
 
         <div className="flex items-center gap-3">
@@ -347,21 +304,21 @@ export const WorkflowSLAAlignment: React.FC = () => {
 
       {/* Main Content Area */}
       <div className="relative">
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-24 space-y-4">
-            <div className="w-12 h-12 border-4 border-brand-red/20 border-t-brand-red rounded-full animate-spin" />
-            <p className="text-brand-gray font-bold text-sm animate-pulse">Loading workflow data...</p>
+        {!wf.data && wf.loading ? (
+          // first ever visit with nothing cached: skeleton of the list, not a full-page spinner
+          <div className="space-y-3" role="status" aria-label="Loading workflows">
+            {[0, 1, 2, 3].map(i => <div key={i} className="h-16 rounded-2xl bg-white/70 border border-brand-gray/10 animate-pulse" />)}
           </div>
-        ) : error ? (
-          <div className="bg-red-50 border border-red-100 p-8 rounded-3xl text-center">
+        ) : !wf.data && wf.error ? (
+          <div className="bg-red-50 border border-red-100 p-8 rounded-3xl text-center" role="alert">
             <AlertTriangle size={48} className="mx-auto text-red-500 mb-4" />
             <h3 className="text-lg font-bold text-red-900 mb-2">Error Loading Data</h3>
-            <p className="text-red-700 mb-6">{error}</p>
+            <p className="text-red-700 mb-6">{wf.error}</p>
             <button 
-              onClick={fetchRequests}
-              className="bg-red-600 text-white px-6 py-2 rounded-xl font-bold text-sm hover:bg-red-700 transition-all"
+              onClick={() => refData.workflows.load({ force: true }).catch(() => {})}
+              className="inline-flex items-center gap-2 bg-red-600 text-white px-6 py-2 rounded-xl font-bold text-sm hover:bg-red-700 transition-all"
             >
-              Retry
+              <RefreshCw size={14} /> Retry
             </button>
           </div>
         ) : (

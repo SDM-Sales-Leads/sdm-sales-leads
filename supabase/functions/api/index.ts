@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
 // SDM Sales Leads — the one API edge function. All routes live in routes_*.ts.
-import { admin, Caller, corsHeaders, getCaller, getSecret, HttpError, json, safeEqual } from "./lib.ts";
+import { admin, Caller, corsHeaders, dropCallerCache, getCaller, getSecret, HttpError, json, safeEqual } from "./lib.ts";
 import { match, pathExists } from "./router.ts";
 import "./routes_core.ts";
 import "./routes_tickets.ts";
@@ -37,6 +37,8 @@ Deno.serve(async (req: Request) => {
     let c: Caller | null = null;
     if (!m.route.isPublic) c = await getCaller(req);
     const result = await m.route.handler({ req, c: c as Caller, params: m.params, query: url.searchParams });
+    // anything that can change who a person is or what they may do: forget the remembered callers at once
+    if (req.method !== "GET" && /^\/(users|role-permissions|me|admin|auth)/.test(path)) dropCallerCache();
     if (result instanceof Response) return wrap(result);
     return wrap(json(result ?? { success: true }));
   } catch (e: any) {

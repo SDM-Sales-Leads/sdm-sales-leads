@@ -114,7 +114,7 @@ export const WorkflowDashboard: React.FC<WorkflowDashboardProps> = ({ requests }
           </div>
           <div className="flex items-end justify-between">
             <h3 className="text-3xl font-bold text-brand-black">{stats.aligned}</h3>
-            <div className="text-brand-gray text-sm">Ready for CRM</div>
+            <div className="text-brand-gray text-sm">Ready to finalize</div>
           </div>
         </div>
       </div>

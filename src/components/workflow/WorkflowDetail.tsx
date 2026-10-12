@@ -30,7 +30,8 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useAuth } from '../../services/AuthContext';
+import { useWorkflowAccess } from './access';
+import { settleRender } from './settleRender';
 import { WorkflowCanvas } from './WorkflowCanvas';
 import { WORKING_HOURS_PER_DAY } from '../../constants';
 import { toast } from 'sonner';
@@ -60,7 +61,7 @@ export const WorkflowDetail: React.FC<WorkflowDetailProps> = ({
   onStatusChange,
   onAddFeedback 
 }) => {
-  const { user, permissions } = useAuth();
+  const { canEditFor, canApproveFor, canComment, canDelete: canDeleteFn } = useWorkflowAccess();
   const workflowRef = useRef<HTMLDivElement>(null);
   const [viewMode, setViewMode] = useState<'list' | 'visual'>('list');
   const [isExporting, setIsExporting] = useState(false);
@@ -69,18 +70,10 @@ export const WorkflowDetail: React.FC<WorkflowDetailProps> = ({
     businessJustification: ''
   });
 
-  const isAdmin = user?.role === 'Admin';
-  const isDeptHead = user?.role === 'Department Head' && user?.department === request.department;
-  const isSales = user?.role === 'Sales Team';
-
-  // Allow any user with edit permission to edit workflows
-  const canEdit = !!permissions?.canEditWorkflow;
-  
-  const canDelete = isAdmin || (user?.id != null && String(user.id) === String(request.createdBy));
-  const canChangeStatus = permissions?.canApproveWorkflow && (
-    isAdmin || (isDeptHead && user?.department === request.department)
-  );
-  const canAddFeedback = permissions?.canCommentWorkflow;
+  const canEdit = canEditFor(request.department);
+  const canDelete = canDeleteFn(request);
+  const canChangeStatus = canApproveFor(request.department);
+  const canAddFeedback = canComment;
 
   const totalSLA = stepsHours(request.steps);
   const totalDays = hoursToDays(totalSLA);
@@ -105,8 +98,8 @@ export const WorkflowDetail: React.FC<WorkflowDetailProps> = ({
     setIsExporting(true);
 
     try {
-      // Small delay to ensure all icons/fonts are rendered in the off-screen template
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // wait until the off-screen template is painted, fonts and images are ready (no fixed delay)
+      await settleRender('#workflow-export-container');
 
       const containerElement = document.getElementById('workflow-export-container');
 
@@ -522,14 +515,14 @@ export const WorkflowDetail: React.FC<WorkflowDetailProps> = ({
             )}
           </div>
 
-          {/* Admin Finalization */}
+          {/* Finalization */}
           {canChangeStatus && request.status !== 'Finalized' && (
             <div className="bg-green-50 p-6 rounded-3xl border border-green-100 space-y-4">
               <div className="flex items-center gap-3">
                 <CheckCircle2 size={20} className="text-green-600" />
-                <h3 className="font-bold text-green-900">Admin Finalization</h3>
+                <h3 className="font-bold text-green-900">Finalization</h3>
               </div>
-              <p className="text-xs text-green-700">As CRM Head, you can finalize this workflow once all departments are aligned.</p>
+              <p className="text-xs text-green-700">You can finalize this workflow once all departments are aligned. Finalized workflows become available as templates when a ticket is created.</p>
               <button 
                 onClick={() => onStatusChange?.(request.id, 'Finalized')}
                 className="w-full bg-green-600 text-white py-2 rounded-lg font-bold text-sm hover:bg-green-700 transition-all"

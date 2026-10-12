@@ -16,6 +16,7 @@ const WorkflowSLAAlignment = lazy(() => import('./components/WorkflowSLAAlignmen
 const SalesCrmModule = lazy(() => import('./components/crm/SalesCrmModule').then(m => ({ default: m.SalesCrmModule })));
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { ticketService } from './services/ticketService';
+import { warmReferenceData } from './services/refData';
 import { Ticket as TicketType } from './types';
 import { motion } from 'motion/react';
 
@@ -23,7 +24,10 @@ import { Menu } from 'lucide-react';
 import { Logo } from './constants';
 
 const AppContent: React.FC = () => {
-  const { user, isLoading, mustChangePassword } = useAuth();
+  const { user, permissions, isLoading, mustChangePassword } = useAuth();
+
+  // warm the lists the ticket and workflow pages need, once, after the first screen has been drawn
+  useEffect(() => { if (user && permissions) warmReferenceData(permissions as any); }, [user, permissions]);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [crmSubTab, setCrmSubTab] = useState('dashboard');
   const [tickets, setTickets] = useState<TicketType[]>([]);

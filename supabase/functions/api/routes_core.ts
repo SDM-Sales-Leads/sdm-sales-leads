@@ -2,7 +2,7 @@
 // Session, users, roles, settings, e-mail, logs, reference data (categories, SLA, articles), notifications.
 import {
   admin, asUuid, bad, body, can, clean, escHtml, forbidden, getConfig, hasSecret, HttpError, isAdmin, isEmail, isManager, logActivity,
-  need, needAdmin, notFound, nowIso, rateLimit, setConfig, setSecret, str, UUID_RE, Caller, isObj,
+  getSecret, need, needAdmin, notFound, nowIso, rateLimit, setConfig, setSecret, str, UUID_RE, Caller, isObj,
 } from "./lib.ts";
 import { route } from "./router.ts";
 import { loadEws, sendMail, validHost, verify } from "./ews.ts";
@@ -351,26 +351,93 @@ route("GET", "/health", async () => ({ status: "ok", database: "supabase" }), { 
 
 route("GET", "/admin/diagnostics", async ({ c, query }) => {
   need(c, "canViewAdminPanel");
-  const tables = ["app_users", "tickets", "workflow_requests", "crm_leads", "crm_contacts", "crm_companies", "crm_email_logs"];
-  const collections: Record<string, string> = {};
-  let dbError: string | null = null;
-  for (const t of tables) {
-    const r = await admin.from(t).select("*", { count: "exact", head: true });
-    if (r.error) dbError = "Database read failed"; else collections[t] = `Active (${r.count ?? 0} rows)`;
+  const t0 = Date.now();
+  const ping = query.get("ping") === "true";
+  const since24 = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  const head = (t: string, f?: (q: any) => any) => {
+    const q = admin.from(t).select("*", { count: "exact", head: true });
+    return Promise.resolve(f ? f(q) : q).then((r: any) => ({ n: r.error ? null : (r.count ?? 0), err: !!r.error }));
+  };
+  const live = (q: any) => q.is("deleted_at", null);
+
+  // every independent read runs at the same time
+  const [
+    users, tickets, wf, leads, contacts, companies, mailLogs, leadAudit,
+    noOwner, unlinked, noPhone, withPhone, leads24, mail24, lastMail, ingestAuto, cfg, hasKey, hasPass,
+  ] = await Promise.all([
+    head("app_users"), head("tickets"), head("workflow_requests"),
+    head("crm_leads", live), head("crm_contacts", live), head("crm_companies", live),
+    head("crm_email_logs"), head("crm_lead_audit"),
+    head("crm_leads", (q) => live(q).is("assigned_to", null)),
+    head("crm_leads", (q) => live(q).is("assigned_to", null).not("data->>legacyOwnerName", "is", null).neq("data->>legacyOwnerName", "")),
+    head("crm_leads", (q) => live(q).is("phone_norm", null)),
+    head("crm_leads", (q) => live(q).not("phone_norm", "is", null)),
+    head("crm_leads", (q) => live(q).not("email_id", "is", null).gte("created_at", since24)),
+    head("crm_email_logs", (q) => q.gte("created_at", since24)),
+    admin.from("crm_email_logs").select("created_at,received_at,data").order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    admin.from("system_config").select("value").eq("key", "ingest_auto").maybeSingle(),
+    getConfig<any>("email_config", {}),
+    hasSecret("gemini_key"),
+    hasSecret("ews_password"),
+  ]);
+
+  const counts = { users: users.n, tickets: tickets.n, workflowRequests: wf.n, leads: leads.n, contacts: contacts.n, companies: companies.n, mailLogs: mailLogs.n, leadAudit: leadAudit.n };
+  const dbError = [users, tickets, wf, leads, contacts, companies, mailLogs, leadAudit].some((x) => x.err) ? "Some database reads failed" : null;
+
+  // duplicates: same phone on more than one live lead (reads only the phone column, pages in parallel)
+  let dupGroups: number | null = null, dupLeads: number | null = null;
+  const nPhone = withPhone.n ?? 0;
+  if (!withPhone.err && nPhone > 0) {
+    try {
+      const pages = Math.min(50, Math.ceil(nPhone / 1000));
+      const parts = await Promise.all(Array.from({ length: pages }, (_, i) =>
+        admin.from("crm_leads").select("phone_norm").is("deleted_at", null).not("phone_norm", "is", null).order("id").range(i * 1000, i * 1000 + 999)));
+      const seen = new Map<string, number>();
+      for (const p of parts) { if (p.error) throw new Error("read failed"); for (const r of p.data || []) seen.set(r.phone_norm, (seen.get(r.phone_norm) || 0) + 1); }
+      dupGroups = 0; dupLeads = 0;
+      for (const v of seen.values()) if (v > 1) { dupGroups++; dupLeads += v; }
+    } catch { dupGroups = null; dupLeads = null; }
   }
-  const cfg = await getConfig<any>("email_config", {});
+
+  // the two live tests (only when asked)
   let emailStatus = "Not Configured", emailError: string | null = null;
-  if (cfg.host && (await hasSecret("ews_password"))) {
-    if (query.get("ping") === "true") {
-      try { await verify(await loadEws()); emailStatus = "Operational"; } catch (e: any) { emailStatus = "Error"; emailError = e?.message || "failed"; }
-    } else emailStatus = "Configured (not tested)";
+  if (cfg.host && hasPass) emailStatus = "Configured (not tested)";
+  let aiStatus = hasKey ? "Key saved" : "Missing Key", aiError: string | null = null;
+  if (ping) {
+    const tasks: Promise<void>[] = [];
+    if (cfg.host && hasPass) tasks.push(loadEws().then((e) => verify(e)).then(() => { emailStatus = "Operational"; }).catch((e: any) => { emailStatus = "Error"; emailError = e?.message || "failed"; }));
+    if (hasKey) tasks.push((async () => {
+      const key = await getSecret("gemini_key");
+      try {
+        const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent", {
+          method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key || "" },
+          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "Reply with the single word OK" }] }], generationConfig: { maxOutputTokens: 8 } }),
+          signal: AbortSignal.timeout(12000),
+        });
+        if (res.ok) aiStatus = "Operational"; else { aiStatus = "Error"; aiError = `Gemini answered HTTP ${res.status}`; }
+      } catch (e: any) { aiStatus = "Error"; aiError = e?.name === "TimeoutError" ? "Gemini did not answer in 12 s" : "Could not reach Gemini"; }
+    })());
+    await Promise.all(tasks);
   }
-  const hasKey = await hasSecret("gemini_key");
+
+  const last: any = lastMail.data || null;
   return {
     timestamp: nowIso(),
-    database: { type: "cloud", connected: !dbError, error: dbError, collections, logs: [] },
-    environment: { hasFirebaseKey: false, hasGeminiKey: hasKey, geminiKeyLength: 0, aiStatus: hasKey ? "Key saved" : "Missing Key", aiError: null },
-    email: { status: emailStatus, error: emailError, host: cfg.host || "" },
+    serverMs: Date.now() - t0,
+    database: { connected: !dbError, error: dbError, counts },
+    environment: { hasGeminiKey: hasKey, aiStatus, aiError },
+    email: { status: emailStatus, error: emailError, host: cfg.host || "", mailbox: cfg.user || "" },
+    ingestion: {
+      auto: ingestAuto.data?.value === true,
+      lastLogAt: last ? (last.created_at || last.received_at || null) : null,
+      lastLogStatus: last?.data?.status || null,
+      mailLogs24h: mail24.n,
+      leadsFromMail24h: leads24.n,
+    },
+    leadsHealth: {
+      total: leads.n, noOwner: noOwner.n, unlinkedImportedOwners: unlinked.n, missingPhone: noPhone.n,
+      duplicatePhoneGroups: dupGroups, duplicatePhoneLeads: dupLeads,
+    },
   };
 });
 
@@ -379,7 +446,8 @@ route("GET", "/admin/activity", async ({ c, query }) => {
   const page = Math.max(1, parseInt(query.get("page") || "1") || 1);
   const limit = Math.max(1, Math.min(100, parseInt(query.get("limit") || "30") || 30));
   const from = (page - 1) * limit;
-  const { data, count } = await admin.from("activity_logs").select("*", { count: "exact" }).order("at", { ascending: false }).range(from, from + limit - 1);
+  const { data, count, error } = await admin.from("activity_logs").select("id,at,user_id,user_name,action,details,type", { count: "exact" }).order("at", { ascending: false }).range(from, from + limit - 1);
+  if (error) throw new HttpError(500, "Could not read the activity log");
   return {
     logs: (data || []).map((r: any) => ({ id: r.id, timestamp: r.at, userId: r.user_id || "", userName: r.user_name || "", action: r.action, details: r.details || "", type: r.type })),
     total: count || 0, page, limit,

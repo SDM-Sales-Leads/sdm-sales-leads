@@ -1,45 +1,49 @@
-import { WorkflowRequest, WorkflowStep, Dependency, SalesFeedback } from '../types';
+import { WorkflowRequest } from '../types';
+import { fetchWithTimeout } from '../lib/fetchUtils';
+import { refData } from './refData';
+
+// the server explains refusals ("You cannot approve workflows of Finance"): show that, not a generic text
+async function fail(res: Response, fallback: string): Promise<never> {
+  let msg = fallback;
+  try { const j = await res.json(); if (j?.error) msg = j.error; } catch { /* keep fallback */ }
+  throw new Error(msg);
+}
+
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 export const workflowService = {
-  getAll: async (): Promise<WorkflowRequest[]> => {
-    try {
-      const res = await fetch('/api/workflow-requests');
-      if (!res.ok) throw new Error('Failed to fetch workflow requests');
-      return await res.json();
-    } catch (err) {
-      console.error(err);
-      return [];
-    }
-  },
+  /** Cached list (stale-while-revalidate, see refData). Throws when there is nothing cached and the request fails. */
+  getAll: (opts: { force?: boolean } = {}): Promise<WorkflowRequest[]> => refData.workflows.load(opts),
 
   create: async (request: Partial<WorkflowRequest>): Promise<WorkflowRequest> => {
-    const res = await fetch('/api/workflow-requests', {
+    const res = await fetchWithTimeout('/api/workflow-requests', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request)
-    });
-    if (!res.ok) throw new Error('Failed to create workflow request');
-    return await res.json();
+      headers: JSON_HEADERS,
+      body: JSON.stringify(request),
+    }, 20000);
+    if (!res.ok) await fail(res, 'Failed to create workflow request');
+    const created: WorkflowRequest = await res.json();
+    refData.workflows.set(prev => [created, ...(prev || []).filter(r => r.id !== created.id)]);
+    return created;
   },
 
-  update: async (id: string, updates: Partial<WorkflowRequest>): Promise<WorkflowRequest> => {
-    const res = await fetch(`/api/workflow-requests/${id}`, {
+  /** `quiet`: do not touch the cache with the answer (autosave while the user is still typing: the caller already shows the newest text) */
+  update: async (id: string, updates: Partial<WorkflowRequest>, opts: { quiet?: boolean } = {}): Promise<WorkflowRequest> => {
+    const res = await fetchWithTimeout(`/api/workflow-requests/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
-    });
-    if (!res.ok) throw new Error('Failed to update workflow request');
-    return await res.json();
+      headers: JSON_HEADERS,
+      body: JSON.stringify(updates),
+    }, 20000);
+    if (!res.ok) await fail(res, 'Failed to update workflow request');
+    const updated: WorkflowRequest = await res.json();
+    if (!opts.quiet) refData.workflows.set(prev => (prev || []).map(r => (r.id === id ? updated : r)));
+    return updated;
   },
 
-  delete: async (id: string, userId?: string, userName?: string): Promise<void> => {
-    const query = new URLSearchParams();
-    if (userId) query.append('userId', userId);
-    if (userName) query.append('userName', userName);
-    
-    const res = await fetch(`/api/workflow-requests/${id}?${query.toString()}`, {
-      method: 'DELETE'
-    });
-    if (!res.ok) throw new Error('Failed to delete workflow request');
-  }
+  // the server takes the actor from the login: no user id / name in the URL
+  delete: async (id: string): Promise<void> => {
+    const res = await fetchWithTimeout(`/api/workflow-requests/${encodeURIComponent(id)}`, { method: 'DELETE' }, 15000);
+    if (!res.ok) await fail(res, 'Failed to delete workflow request');
+    refData.workflows.set(prev => (prev || []).filter(r => r.id !== id));
+  },
 };

@@ -71,16 +71,34 @@ const FALLBACK_PERMS: Record<string, any> = {
   canViewKnowledgeBase: true,
 };
 
+// Who is calling? Three database/auth round trips (verify the token, load the user, load the role's permissions)
+// used to run on EVERY request (~350 ms of every call). Both answers are now remembered briefly in this
+// function instance: the token check for 60 s, the user + permissions for 20 s. Any change to users or roles
+// clears them at once (see index.ts); a disabled person loses access within a minute at most.
+const tokenCache = new Map<string, { uid: string; until: number }>();
+const callerCache = new Map<string, { until: number; caller: Caller }>();
+const TOKEN_TTL = 60_000, CALLER_TTL = 20_000;
+export function dropCallerCache() { tokenCache.clear(); callerCache.clear(); }
+
 export async function getCaller(req: Request): Promise<Caller> {
   const h = req.headers.get("authorization") || "";
   const token = h.toLowerCase().startsWith("bearer ") ? h.slice(7).trim() : "";
   if (!token) throw new HttpError(401, "Sign in required");
-  const { data, error } = await admin.auth.getUser(token);
-  if (error || !data?.user) throw new HttpError(401, "Session expired, sign in again");
-  const { data: u } = await admin.from("app_users").select("*").eq("id", data.user.id).maybeSingle();
-  if (!u || !u.active) throw new HttpError(403, "This account is not active");
+  const now = Date.now();
+  let uid = tokenCache.get(token)?.until! > now ? tokenCache.get(token)!.uid : "";
+  if (!uid) {
+    const { data, error } = await admin.auth.getUser(token);
+    if (error || !data?.user) throw new HttpError(401, "Session expired, sign in again");
+    uid = data.user.id;
+    if (tokenCache.size > 400) tokenCache.clear();
+    tokenCache.set(token, { uid, until: now + TOKEN_TTL });
+  }
+  const hit = callerCache.get(uid);
+  if (hit && hit.until > now) return hit.caller;
+  const { data: u } = await admin.from("app_users").select("*").eq("id", uid).maybeSingle();
+  if (!u || !u.active) { callerCache.delete(uid); throw new HttpError(403, "This account is not active"); }
   const { data: rp } = await admin.from("role_permissions").select("perms").eq("role", u.role).maybeSingle();
-  return {
+  const caller: Caller = {
     id: u.id,
     email: u.email,
     name: u.name,
@@ -90,6 +108,9 @@ export async function getCaller(req: Request): Promise<Caller> {
     mustChangePassword: !!u.must_change_password,
     perms: { ...FALLBACK_PERMS, ...(rp?.perms || {}) },
   };
+  if (callerCache.size > 400) callerCache.clear();
+  callerCache.set(uid, { until: now + CALLER_TTL, caller });
+  return caller;
 }
 
 export const isAdmin = (c: Caller) => c.role === "Admin";

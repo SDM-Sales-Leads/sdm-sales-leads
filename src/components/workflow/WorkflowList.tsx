@@ -1,4 +1,5 @@
 import React from 'react';
+import { WORKFLOW_DEPARTMENTS } from './departments';
 import { WorkflowRequest } from '../../types';
 import { WORKING_HOURS_PER_DAY } from '../../constants';
 import { toast } from 'sonner';
@@ -24,8 +25,8 @@ import {
   Loader2,
   Download
 } from 'lucide-react';
-import { workflowService } from '../../services/workflowService';
-import { useAuth } from '../../services/AuthContext';
+import { useWorkflowAccess } from './access';
+import { settleRender } from './settleRender';
 import jsPDF from 'jspdf';
 import { domToCanvas } from 'modern-screenshot';
 import { WorkflowExportTemplate } from './WorkflowExportTemplate';
@@ -40,13 +41,12 @@ interface WorkflowListProps {
 }
 
 export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, onView, onDelete, onDuplicate, onToggleVisibility }) => {
-  const { user, permissions } = useAuth();
+  const { isAdmin, canEditFor, canCreateFor, canDelete } = useWorkflowAccess();
   const [searchTerm, setSearchTerm] = React.useState('');
   const [filterDept, setFilterDept] = React.useState('All');
   const [isBulkExporting, setIsBulkExporting] = React.useState(false);
   const [completedCount, setCompletedCount] = React.useState(0);
 
-  const isAdmin = user?.role === 'Admin';
 
   const filteredRequests = requests.filter(r => {
     const matchesSearch = (r.title?.toLowerCase() || '').includes(searchTerm.toLowerCase()) || 
@@ -68,8 +68,8 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, on
       setIsBulkExporting(true);
       setCompletedCount(0);
 
-      // Wait 2 seconds to ensure off-screen elements mount, resolve images (logo) and styles
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // wait until the off-screen pages are mounted, fonts and images are ready (no fixed delay)
+      await settleRender('[id^="bulk-export-container-"]');
 
       const pdf = new jsPDF({
         orientation: 'portrait',
@@ -158,25 +158,7 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, on
               className="bg-transparent focus:outline-none text-sm font-medium w-full"
             >
               <option value="All">All Departments</option>
-              <option value="Development">Development</option>
-              <option value="Finance">Finance</option>
-              <option value="Infrastructure">Infrastructure</option>
-              <option value="Sales">Sales</option>
-              <option value="CRM">CRM</option>
-              <option value="PMO">PMO</option>
-              <option value="Procurement">Procurement</option>
-              <option value="Community">Community</option>
-              <option value="Business development">Business development</option>
-              <option value="GM">GM</option>
-              <option value="CEO">CEO</option>
-              <option value="CFO">CFO</option>
-              <option value="Finance OP">Finance OP</option>
-              <option value="Finance Dev">Finance Dev</option>
-              <option value="Sales Operation">Sales Operation</option>
-              <option value="Projects">Projects</option>
-              <option value="Legal">Legal</option>
-              <option value="Document Control">Document Control</option>
-              <option value="Office Manager">Office Manager</option>
+                {WORKFLOW_DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
           
@@ -264,6 +246,7 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, on
                         <Eye size={18} />
                       </button>
                       
+                      {canCreateFor(request.department) && (
                       <button 
                         onClick={() => onDuplicate(request)}
                         className="p-2 text-brand-gray hover:text-brand-red hover:bg-brand-red/10 rounded-lg transition-all"
@@ -271,6 +254,7 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, on
                       >
                         <Copy size={18} />
                       </button>
+                      )}
                       
                       {isAdmin && (
                         <button 
@@ -283,7 +267,7 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, on
                       )}
                       
                       {/* Allow editing workflow to anyone with edit permission */}
-                      {permissions?.canEditWorkflow && (
+                      {canEditFor(request.department) && (
                         <button 
                           onClick={() => onEdit(request)}
                           className="p-2 text-brand-gray hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
@@ -294,7 +278,7 @@ export const WorkflowList: React.FC<WorkflowListProps> = ({ requests, onEdit, on
                       )}
 
                       {/* Only allow delete if user is admin or creator */}
-                      {(isAdmin || (user?.id != null && String(user.id) === String(request.createdBy))) && (
+                      {canDelete(request) && (
                         <button 
                           onClick={() => handleDelete(request.id)}
                           className="p-2 text-brand-gray hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"

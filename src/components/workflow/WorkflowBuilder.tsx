@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { STEP_ROLES } from './departments';
 import { WorkflowStep } from '../../types';
 import { 
   Plus, 
@@ -204,27 +205,7 @@ export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({ steps, onChang
                 onChange={(e) => setNewStep({ ...newStep, responsibleRole: e.target.value })}
                 className="w-full px-3 py-2 bg-white border border-brand-gray/20 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/20"
               >
-                <option value="Development">Development</option>
-                <option value="Finance">Finance</option>
-                <option value="Infrastructure">Infrastructure</option>
-                <option value="Sales">Sales</option>
-                <option value="CRM">CRM</option>
-                <option value="PMO">PMO</option>
-                <option value="Procurement">Procurement</option>
-                <option value="Community">Community</option>
-                <option value="Business development">Business development</option>
-                <option value="GM">GM</option>
-                <option value="CEO">CEO</option>
-                <option value="CFO">CFO</option>
-                <option value="Manager">Manager</option>
-                <option value="Director">Director</option>
-                <option value="Finance OP">Finance OP</option>
-                <option value="Finance Dev">Finance Dev</option>
-                <option value="Sales Operation">Sales Operation</option>
-                <option value="Projects">Projects</option>
-                <option value="Legal">Legal</option>
-                <option value="Document Control">Document Control</option>
-                <option value="Office Manager">Office Manager</option>
+                {STEP_ROLES.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
             )}
           </div>
@@ -433,27 +414,7 @@ export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({ steps, onChang
                         onChange={(e) => updateStep(step.id, { responsibleRole: e.target.value })}
                         className="bg-brand-gray/5 border-none p-0 text-xs font-bold text-brand-black focus:ring-0"
                       >
-                        <option value="Development">Development</option>
-                        <option value="Finance">Finance</option>
-                        <option value="Infrastructure">Infrastructure</option>
-                        <option value="Sales">Sales</option>
-                        <option value="CRM">CRM</option>
-                        <option value="PMO">PMO</option>
-                        <option value="Procurement">Procurement</option>
-                        <option value="Community">Community</option>
-                        <option value="Business development">Business development</option>
-                        <option value="GM">GM</option>
-                        <option value="CEO">CEO</option>
-                        <option value="CFO">CFO</option>
-                        <option value="Manager">Manager</option>
-                        <option value="Director">Director</option>
-                <option value="Finance OP">Finance OP</option>
-                <option value="Finance Dev">Finance Dev</option>
-                <option value="Sales Operation">Sales Operation</option>
-                <option value="Projects">Projects</option>
-                <option value="Legal">Legal</option>
-                <option value="Document Control">Document Control</option>
-                <option value="Office Manager">Office Manager</option>
+                {STEP_ROLES.map(d => <option key={d} value={d}>{d}</option>)}
                       </select>
                     )}
                   </div>

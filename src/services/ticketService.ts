@@ -1,5 +1,7 @@
-import { Ticket, TicketStatus, Priority, TicketHistory, SLAConfig } from '../types';
+import { Ticket, TicketHistory, SLAConfig } from '../types';
 import { fetchWithTimeout } from '../lib/fetchUtils';
+import { adminService } from './adminService';
+import { toast } from 'sonner';
 
 // spreadsheet-safe CSV cell: quoted, and a leading = + - @ is neutralised so Excel never runs it as a formula
 const csvCell = (v: unknown) => {
@@ -7,6 +9,34 @@ const csvCell = (v: unknown) => {
   if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
   return `"${t.replace(/"/g, '""')}"`;
 };
+
+// the server explains refusals ("You can only notify...", "The ticket was changed by someone else..."): show that
+async function fail(res: Response, fallback: string): Promise<never> {
+  let msg = fallback;
+  try { const j = await res.json(); if (j?.error) msg = j.error; } catch { /* keep fallback */ }
+  throw new Error(msg);
+}
+
+/** Attachment limits enforced by the server (routes_tickets.ts checkAttachments): at most 10 files and 6,000,000
+ *  characters of base64 data in total (about 4.4 MB of files). */
+export const MAX_ATTACHMENTS = 10;
+export const MAX_ATTACHMENT_CHARS = 6_000_000;
+/** length of a base64 data URL for a file of this size (data:<type>;base64, + 4 chars per 3 bytes) */
+export const dataUrlLength = (bytes: number, mime = '') => Math.ceil(bytes / 3) * 4 + 13 + mime.length;
+export const formatMB = (chars: number) => `${(chars * 0.75 / 1_048_576).toFixed(1)} MB`;
+
+export interface NewTicket {
+  title: string;
+  description: string;
+  type: string;
+  subtype: string;
+  priority: string;
+  workflowId?: string;
+  department?: string;
+  crmContactId?: string;
+  crmContactName?: string;
+  attachments?: string[];
+}
 
 export const ticketService = {
   getTickets: async (): Promise<Ticket[]> => {
@@ -20,91 +50,47 @@ export const ticketService = {
     }
   },
 
-  createTicket: async (ticketData: Partial<Ticket>, slaConfigs: SLAConfig[]): Promise<Ticket> => {
-    const priorityHours = slaConfigs.find(c => c.priority === ticketData.priority)?.hours || 24;
-    
-    const now = new Date();
-    const deadline = new Date(now.getTime() + priorityHours * 60 * 60 * 1000);
-
-    const newTicket: any = {
-      title: ticketData.title!,
-      description: ticketData.description!,
-      type: ticketData.type!,
-      subtype: ticketData.subtype!,
-      priority: ticketData.priority!,
-      status: 'New',
-      requesterId: ticketData.requesterId!,
-      requesterEmail: ticketData.requesterEmail!,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      slaDeadline: deadline.toISOString(),
-      totalPausedTime: 0,
-      history: [{
-        id: Math.random().toString(),
-        action: 'Ticket Created',
-        actor: ticketData.requesterEmail!,
-        date: now.toISOString()
-      }],
-      attachments: ticketData.attachments || [],
-      ...ticketData
+  /**
+   * Creates a ticket. The server decides everything that matters (ticket number, requester, SLA deadline from the
+   * SLA table or from the workflow's total SLA + buffer, first workflow step): the browser sends only what the
+   * person typed and uses the saved ticket the server returns.
+   */
+  createTicket: async (data: NewTicket): Promise<Ticket> => {
+    const body = {
+      title: data.title,
+      description: data.description,
+      type: data.type,
+      subtype: data.subtype,
+      priority: data.priority,
+      workflowId: data.workflowId || undefined,
+      department: data.department || undefined,
+      crmContactId: data.crmContactId || undefined,
+      crmContactName: data.crmContactName || undefined,
+      attachments: data.attachments || [],
     };
-
     const res = await fetchWithTimeout('/api/tickets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newTicket)
-    }, 15000);
-
-    if (!res.ok) throw new Error('Failed to save ticket');
-    
+      body: JSON.stringify(body),
+    }, 30000);
+    if (!res.ok) await fail(res, 'Failed to save ticket');
     return await res.json();
   },
 
-  updateTicket: async (id: string | number, updates: Partial<Ticket>, actorEmail: string, currentTicket?: Ticket, slaConfigs?: SLAConfig[]): Promise<Ticket> => {
+  /**
+   * Updates a ticket. The server applies the SLA rules (pause while "Waiting on User / Vendor", deadline moved by the
+   * paused time, recalculated when the priority changes on a ticket without a workflow) and returns the saved
+   * ticket: that answer, not a browser-side guess, is what callers get.
+   */
+  updateTicket: async (id: string | number, updates: Partial<Ticket>, actorEmail: string, currentTicket?: Ticket, _slaConfigs?: SLAConfig[]): Promise<Ticket> => {
     let ticket = currentTicket;
     if (!ticket) {
       const tickets = await ticketService.getTickets();
       ticket = tickets.find(t => String(t.id) === String(id));
     }
-    
     if (!ticket) throw new Error('Ticket not found');
 
     const now = new Date();
-
-    // SLA Logic: Pause/Resume
-    let { slaPausedAt, totalPausedTime, slaDeadline } = ticket;
-    
-    // Determine if we are currently in a pausing status
-    const isPausingStatus = ['Waiting on User', 'Waiting on Vendor'].includes(updates.status || ticket.status);
-    const wasPausedStatus = !!ticket.slaPausedAt;
-
-    if (updates.status) {
-      const newStatusIsPausing = ['Waiting on User', 'Waiting on Vendor'].includes(updates.status);
-      
-      if (newStatusIsPausing && !wasPausedStatus) {
-        // Just entered a pausing status
-        slaPausedAt = now.toISOString();
-      } else if (!newStatusIsPausing && wasPausedStatus) {
-        // Just exited a pausing status
-        const pausedDuration = now.getTime() - new Date(slaPausedAt!).getTime();
-        totalPausedTime = (totalPausedTime || 0) + pausedDuration;
-        slaPausedAt = null;
-        // Shift deadline
-        const currentDeadline = new Date(slaDeadline);
-        slaDeadline = new Date(currentDeadline.getTime() + pausedDuration).toISOString();
-      }
-    }
-
-    // Recalculate SLA if priority changes
-    if (updates.priority && updates.priority !== ticket.priority && slaConfigs) {
-      const newPriorityConfig = slaConfigs.find(c => c.priority === updates.priority);
-      if (newPriorityConfig) {
-        const created = new Date(ticket.createdAt);
-        const newDeadline = new Date(created.getTime() + (newPriorityConfig.hours * 60 * 60 * 1000) + (totalPausedTime || 0));
-        slaDeadline = newDeadline.toISOString();
-      }
-    }
-
     const historyEntry: TicketHistory = {
       id: Math.random().toString(),
       action: updates.status ? `Status changed to ${updates.status}` : 'Ticket updated',
@@ -115,28 +101,15 @@ export const ticketService = {
       attachments: updates.history?.[0]?.attachments
     };
 
-    const updatedTicket: Ticket = {
-      ...ticket,
-      ...updates,
-      updatedAt: now.toISOString(),
-      slaPausedAt: slaPausedAt as any,
-      totalPausedTime,
-      slaDeadline,
-      history: [...ticket.history, historyEntry],
-      resolvedAt: updates.status === 'Resolved' 
-        ? now.toISOString() 
-        : (['Resolved', 'Closed'].includes(updates.status || ticket.status) ? ticket.resolvedAt : undefined)
-    };
-
     const res = await fetchWithTimeout(`/api/tickets/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updatedTicket)
-    }, 15000);
+      body: JSON.stringify({ ...updates, history: [...ticket.history, historyEntry] })
+    }, 30000);
+    if (!res.ok) await fail(res, 'Failed to update ticket');
+    const updatedTicket: Ticket = await res.json();
 
-    if (!res.ok) throw new Error('Failed to update ticket');
-
-    // Notification Logic (Async - don't wait to avoid lag)
+    // Notification logic (async: never makes the save wait)
     (async () => {
       try {
         const isRequester = actorEmail === updatedTicket.requesterEmail;
@@ -144,7 +117,7 @@ export const ticketService = {
         const statusChanged = updates.status && updates.status !== ticket!.status;
 
         if (statusChanged || (hasNote && !updates.history?.[0]?.isInternal)) {
-          // Notify Requester if technician updated
+          // Notify the requester when someone else updated
           if (!isRequester) {
             fetchWithTimeout('/api/notify', {
               method: 'POST',
@@ -153,37 +126,32 @@ export const ticketService = {
                 to: updatedTicket.requesterEmail,
                 subject: `Ticket Update: ${updatedTicket.id}`,
                 ticketId: updatedTicket.id,
-                userEmail: actorEmail,
                 action: statusChanged ? `Status: ${updatedTicket.status}` : 'New Comment',
                 body: statusChanged 
                   ? `Your ticket status has been updated to ${updatedTicket.status} by ${actorEmail}.\n\nDescription: ${updatedTicket.description}\n\nNote: ${hasNote || 'No additional notes.'}`
                   : `A new comment has been added to your ticket by ${actorEmail}:\n\n"${hasNote}"\n\nDescription: ${updatedTicket.description}`
               })
-            }, 5000).catch(err => console.warn('Requester notification failed', err));
+            }, 10000).catch(err => console.warn('Requester notification failed', err));
           }
 
-          // Notify Assigned Technician if requester updated
+          // Notify the assigned technician when the requester updated
           if (isRequester && updatedTicket.assignedTo) {
-            const usersRes = await fetchWithTimeout('/api/users', {}, 5000);
-            if (usersRes.ok) {
-              const users = await usersRes.json();
-              const tech = users.find((u: any) => u.id === updatedTicket.assignedTo);
-              if (tech) {
-                fetchWithTimeout('/api/notify', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    to: tech.email,
-                    subject: `User Update on Ticket: ${updatedTicket.id}`,
-                    ticketId: updatedTicket.id,
-                    userEmail: actorEmail,
-                    action: statusChanged ? `Status: ${updatedTicket.status}` : 'User Comment',
-                    body: statusChanged
-                      ? `The requester has updated the ticket status to ${updatedTicket.status}.\n\nDescription: ${updatedTicket.description}\n\nNote: ${hasNote || 'No additional notes.'}`
-                      : `The requester (${actorEmail}) has added a comment to the ticket:\n\n"${hasNote}"\n\nDescription: ${updatedTicket.description}`
-                  })
-                }, 5000).catch(err => console.warn(`Tech notification failed for ${tech.email}`, err));
-              }
+            const users = await adminService.getUsers();
+            const tech = users.find((u: any) => u.id === updatedTicket.assignedTo);
+            if (tech) {
+              fetchWithTimeout('/api/notify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  to: tech.email,
+                  subject: `User Update on Ticket: ${updatedTicket.id}`,
+                  ticketId: updatedTicket.id,
+                  action: statusChanged ? `Status: ${updatedTicket.status}` : 'User Comment',
+                  body: statusChanged
+                    ? `The requester has updated the ticket status to ${updatedTicket.status}.\n\nDescription: ${updatedTicket.description}\n\nNote: ${hasNote || 'No additional notes.'}`
+                    : `The requester (${actorEmail}) has added a comment to the ticket:\n\n"${hasNote}"\n\nDescription: ${updatedTicket.description}`
+                })
+              }, 10000).catch(err => console.warn(`Tech notification failed for ${tech.email}`, err));
             }
           }
         }
@@ -195,49 +163,40 @@ export const ticketService = {
     return updatedTicket;
   },
 
-  deleteTicket: async (id: string | number, userId?: string, userName?: string): Promise<void> => {
-    const query = new URLSearchParams();
-    if (userId) query.append('userId', userId);
-    if (userName) query.append('userName', userName);
-    
-    const res = await fetchWithTimeout(`/api/tickets/${id}?${query.toString()}`, {
-      method: 'DELETE'
-    }, 10000);
-    if (!res.ok) throw new Error('Failed to delete ticket');
+  // the server takes the actor from the login: no user id / name in the URL
+  deleteTicket: async (id: string | number, _userId?: string, _userName?: string): Promise<void> => {
+    const res = await fetchWithTimeout(`/api/tickets/${id}`, { method: 'DELETE' }, 15000);
+    if (!res.ok) await fail(res, 'Failed to delete ticket');
   },
 
-  completeStep: async (ticketId: string | number, stepId: string, actorEmail: string, actorName: string, note?: string): Promise<Ticket> => {
+  completeStep: async (ticketId: string | number, stepId: string, _actorEmail?: string, _actorName?: string, note?: string): Promise<Ticket> => {
     const res = await fetchWithTimeout(`/api/tickets/${ticketId}/steps/${stepId}/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ actorEmail, actorName, note })
-    }, 15000);
-    if (!res.ok) throw new Error('Failed to complete workflow step');
+      body: JSON.stringify({ note })
+    }, 20000);
+    if (!res.ok) await fail(res, 'Failed to complete workflow step');
     return await res.json();
   },
 
   exportTickets: async () => {
     const tickets = await ticketService.getTickets();
     if (tickets.length === 0) {
-      alert("No tickets to export");
+      toast.info('No tickets to export');
       return;
     }
 
-    // Define headers
     const headers = [
       "ID", "Title", "Description", "Type", "Subtype", "Priority", 
       "Status", "Requester Email", "Created At", "Updated At", "SLA Deadline"
     ];
-
-    // Map tickets to rows
     const rows = tickets.map(t => [
       t.id, t.title, t.description, t.type, t.subtype, t.priority,
       t.status, t.requesterEmail, t.createdAt, t.updatedAt, t.slaDeadline
     ].map(csvCell));
 
-    // Combine into CSV string
     const csvContent = [
-      headers.join(","),
+      headers.map(csvCell).join(","),
       ...rows.map(r => r.join(","))
     ].join("\n");
 
@@ -245,29 +204,28 @@ export const ticketService = {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `fusion_dev_desk_export_${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `sdm_service_desk_tickets_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   },
 
+  /** Imports a JSON file of tickets (administrators only; the server accepts at most 1000 per file and never deletes). */
   importTickets: async (file: File): Promise<void> => {
-    return new Promise((resolve, reject) => {
+    const text = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const tickets = JSON.parse(e.target?.result as string);
-          const res = await fetchWithTimeout('/api/tickets/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(tickets)
-          }, 30000);
-          if (!res.ok) throw new Error('Failed to import tickets');
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
-      };
+      reader.onload = () => resolve(String(reader.result ?? ''));
+      reader.onerror = () => reject(new Error('Could not read the file'));
       reader.readAsText(file);
     });
+    let tickets: unknown;
+    try { tickets = JSON.parse(text); } catch { throw new Error('The file is not valid JSON'); }
+    if (!Array.isArray(tickets)) throw new Error('The file must contain a list of tickets');
+    if (tickets.length > 1000) throw new Error('At most 1000 tickets per file');
+    const res = await fetchWithTimeout('/api/tickets/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(tickets)
+    }, 60000);
+    if (!res.ok) await fail(res, 'Failed to import tickets');
   }
 };
-

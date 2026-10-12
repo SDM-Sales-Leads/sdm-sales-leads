@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
+import { STEP_ROLES } from './departments';
 import { 
   ReactFlow, 
   Background, 
@@ -680,27 +681,7 @@ const WorkflowCanvasContent: React.FC<WorkflowCanvasProps> = ({ steps, onChange,
                       onChange={(e) => updateStep(editingStep.id, { responsibleRole: e.target.value })}
                       className="w-full px-4 py-2 bg-brand-gray/5 border border-brand-gray/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-red/20"
                     >
-                      <option value="Development">Development</option>
-                      <option value="Finance">Finance</option>
-                      <option value="Infrastructure">Infrastructure</option>
-                      <option value="Sales">Sales</option>
-                      <option value="CRM">CRM</option>
-                      <option value="PMO">PMO</option>
-                      <option value="Procurement">Procurement</option>
-                      <option value="Community">Community</option>
-                      <option value="Business development">Business development</option>
-                      <option value="GM">GM</option>
-                      <option value="CEO">CEO</option>
-                      <option value="CFO">CFO</option>
-                      <option value="Manager">Manager</option>
-                      <option value="Director">Director</option>
-                <option value="Finance OP">Finance OP</option>
-                <option value="Finance Dev">Finance Dev</option>
-                <option value="Sales Operation">Sales Operation</option>
-                <option value="Projects">Projects</option>
-                <option value="Legal">Legal</option>
-                <option value="Document Control">Document Control</option>
-                <option value="Office Manager">Office Manager</option>
+                {STEP_ROLES.map(d => <option key={d} value={d}>{d}</option>)}
                     </select>
                   )}
                 </div>
