@@ -9,7 +9,7 @@ import { todayISO } from './crm/leadMetrics';
 
 export interface OldNavItem { id: string; tab: string; sub?: string; icon: string; label: string; show: boolean }
 
-export function buildOldNav(p: any): OldNavItem[] {
+export function buildOldNav(p: any, role?: string): OldNavItem[] {
   const manage = !!(p?.canViewSalesDashboard || p?.canViewSalesRules);
   const crm = !!(p?.canViewSalesCrm || p?.canViewSalesLeads);
   const fin = !!p?.canViewSalesFinance;
@@ -19,6 +19,7 @@ export function buildOldNav(p: any): OldNavItem[] {
     { id: 'finance', tab: 'sales-crm', sub: 'finance', icon: '✓', label: 'Won Deals', show: fin },
     { id: 'reports', tab: 'sales-crm', sub: 'reports', icon: '▤', label: fin && !manage ? 'Revenue Reports' : 'Team Reports', show: !!p?.canViewSalesReports },
     { id: 'team-perf', tab: 'sales-crm', sub: 'team-performance', icon: '👥', label: 'Team Performance', show: !!p?.canViewSalesReports },
+    { id: 'bd', tab: 'sales-crm', sub: 'bd-tracker', icon: '📋', label: 'BD Tracker', show: ['Business Development', 'Admin', 'Sales Operation', 'Sales Director', 'Executive (View)'].includes(role || '') },
     { id: 'calendar', tab: 'sales-crm', sub: 'calendar', icon: '▦', label: 'Calendar', show: crm },
     { id: 'achievements', tab: 'sales-crm', sub: 'achievements', icon: '🏅', label: 'Achievements', show: crm && !manage },
     { id: 'guide', tab: 'sales-crm', sub: 'guide', icon: '🎓', label: 'How to use', show: crm },
@@ -64,7 +65,7 @@ export const OldViewShell: React.FC<Props> = ({ activeTab, crmSubTab, go, childr
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
-  const nav = useMemo(() => buildOldNav(permissions), [permissions]);
+  const nav = useMemo(() => buildOldNav(permissions, user?.role), [permissions, user?.role]);
   const current = nav.find((n) => n.tab === activeTab && (n.sub ? n.sub === crmSubTab : true));
 
   // the old look uses its own font and always the light theme; both are undone when the person switches back

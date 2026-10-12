@@ -376,7 +376,7 @@ route("POST", "/crm/fix-mail-leads", async ({ c }) => {
   const ids = rows.map((r: any) => r.email_id).filter(Boolean);
   const logs = new Map<string, any>();
   for (let i = 0; i < ids.length; i += 200) {
-    const { data } = await admin.from("crm_email_logs").select("id,sender,subject").in("id", ids.slice(i, i + 200));
+    const { data } = await admin.from("crm_email_logs").select("id,data").in("id", ids.slice(i, i + 200));
     (data || []).forEach((l: any) => logs.set(l.id, l));
   }
   let fixed = 0;
@@ -384,7 +384,7 @@ route("POST", "/crm/fix-mail-leads", async ({ c }) => {
     const d = { ...r.data }; let ch = false;
     const clean = cleanDescription(String(d.description || ""));
     if (clean !== (d.description || "")) { d.description = clean; ch = true; }
-    if (!d.channel) { const lg = logs.get(r.email_id); const chn = channelFromMail({ sender: lg?.sender, subject: lg?.subject }); if (chn) { d.channel = chn; ch = true; } }
+    if (!d.channel) { const lg = logs.get(r.email_id); const chn = channelFromMail({ sender: lg?.data?.sender, subject: lg?.data?.subject }); if (chn) { d.channel = chn; ch = true; } }
     if (d.source === "Email") { d.source = ""; ch = true; }
     if (ch) { await admin.from("crm_leads").update({ data: d }).eq("id", r.id); fixed++; }
   }
