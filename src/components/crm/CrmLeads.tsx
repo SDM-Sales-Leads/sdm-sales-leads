@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
-import { Lead, Contact, Company, LeadStatus, LeadPriority, LostReason, CommentNote, Attachment, TimelineEvent, PlotRecord } from './types';
+import { Lead, Contact, Company, LeadStatus, LeadPriority, LostReason, CommentNote, Attachment, TimelineEvent } from './types';
 import { CrmPlotRecommendations } from './CrmPlotRecommendations';
 import { ColumnSelector } from './ColumnSelector';
 import { crmService, normalizePhone } from './crmService';
@@ -16,8 +16,8 @@ import { LeadScoreChip, sourceWinRates } from './LeadScoreChip';
 import { WA_LANGS, WaLang, WA_TEMPLATES, getWaLang, setWaLang, suggestTemplate, waCompose, waFill } from './waTemplates';
 import DOMPurify from 'dompurify';
 import { useAuth } from '../../services/AuthContext';
-import { parseCSV } from '../../lib/plots';
-import { getPlotsCsv } from '../../lib/plotsCache';
+import { Plot, loadPlots } from '../../lib/plotsService';
+import { OfferPrintsSection } from './OfferPrintsList';
 import { 
   List, 
   Kanban, 
@@ -143,47 +143,16 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   
   // Advanced filters
   const [filterStatus, setFilterStatus] = useState<string>('All');
-  const [plots, setPlots] = useState<PlotRecord[]>([]);
+  const [plots, setPlots] = useState<Plot[]>([]);
+  const [plotsInfo, setPlotsInfo] = useState<{ landBankUrl: string } | null>(null);
 
+  // plots (Land Bank snapshot) are only needed for the recommendations inside an open lead: load them then, no timers
   useEffect(() => {
+    if (!selectedLead) return;
     let cancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    const fetchPlots = async (retryCount = 0) => {
-      try {
-        const csvText = await getPlotsCsv();
-        const parsed = parseCSV(csvText);
-        const mapped: PlotRecord[] = parsed.map((row: any, index: number) => {
-          const areaSqM = parseFloat((row['Area'] || '0').replace(/,/g, '')) || 0;
-          return {
-            id: index + 1,
-            projectName: (row['Project Name'] || '').trim() || 'Unknown Project',
-            landType: (row['Land Type'] || '').trim() || 'General',
-            status: (row['Status'] || 'Unknown').toUpperCase().trim(),
-            sector: (row['Sector'] || '').trim() || 'General',
-            areaSqM: areaSqM,
-            unitCode: (row['Unit Code'] || '').trim() || 'N/A',
-            clientName: (row['Client Name'] || row['Company Name'] || '').trim() || 'N/A',
-            companyName: (row['Company Name'] || '').trim() || 'N/A',
-            salesContractDate: (row['Sales contract date'] || '').trim() || '',
-            yearOfSale: (row['Year of Sale'] || '').trim() || '',
-            rfPrice: (row['RF Price'] || '').trim() || '',
-            cashValue: (row['Cash Value (A)'] || '').trim() || '',
-            quarterOfSale: (row['Quarter of sale'] || '').trim() || '',
-            salesRep: (row['SOLD BY'] || '').trim() || 'N/A',
-            leadSource: (row['lead source'] || '').trim() || 'N/A'
-          };
-        });
-        if (!cancelled) setPlots(mapped);
-      } catch (e: any) {
-        console.error("Failed to fetch plots in CrmLeads", e.message || e);
-        if (retryCount < 3 && !cancelled) {
-            retryTimer = setTimeout(() => fetchPlots(retryCount + 1), 2000);
-        }
-      }
-    };
-    // the plots sheet is only needed for the recommendations inside an open lead: load it then, not on every visit
-    if (selectedLead && plots.length === 0) fetchPlots();
-    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+    loadPlots().then((st) => { if (!cancelled) { setPlots(st.plots); setPlotsInfo({ landBankUrl: st.landBankUrl }); } })
+      .catch((e: any) => console.error('Failed to load plots in CrmLeads', e.message || e));
+    return () => { cancelled = true; };
   }, [selectedLead !== null]);
 
   // Keep the open lead panel in sync with the latest data (it is a copy; other edits would otherwise be shown stale)
@@ -2590,10 +2559,13 @@ ${user.name || ''}`);
 
               <CrmPlotRecommendations 
                   plots={plots} 
+                  landBankUrl={plotsInfo?.landBankUrl}
                   project={selectedLead.project} 
                   requiredSize={selectedLead.requiredSize}
                   onNavigateToInventory={() => setActiveSubTab('plots-inventory')}
               />
+
+              <OfferPrintsSection leadId={selectedLead.id} />
 
               {/* Description Comments */}
               <div>

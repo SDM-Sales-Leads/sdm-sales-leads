@@ -4,6 +4,7 @@ import { normalizePhone } from './crmService';
 import { channelOf, isOpenStatus, normSource, phoneIntl, statusStage, NO_CHANNEL } from './leadConfig';
 import { statusClass } from './leadRules';
 import { waCompose, waFill } from './waTemplates';
+import { OfferPrintsList } from './OfferPrintsList';
 import { ArrowLeft, Phone, Mail, MessageCircle, Building, Edit, Trash2, Users, TrendingUp, Clock, FileText, MapPin, Languages, History } from 'lucide-react';
 
 export const phoneKeyOf = (v?: string) => normalizePhone(v || '');
@@ -59,7 +60,7 @@ export const waLink = (phone: string | undefined, name: string) => {
   return `https://wa.me/${p}?text=${encodeURIComponent(msg)}`;
 };
 
-type Tab = 'overview' | 'leads' | 'timeline' | 'company';
+type Tab = 'overview' | 'leads' | 'timeline' | 'offers' | 'company';
 
 interface Props {
   contact: Contact;
@@ -117,6 +118,7 @@ export const Customer360: React.FC<Props> = ({ contact, leads, companies, onBack
     { id: 'overview', label: 'Overview' },
     { id: 'leads', label: 'Leads', count: leads.length },
     { id: 'timeline', label: 'Timeline', count: timeline.length },
+    { id: 'offers', label: 'Offers' },
     { id: 'company', label: 'Company' },
   ];
 
@@ -256,6 +258,12 @@ export const Customer360: React.FC<Props> = ({ contact, leads, companies, onBack
             </ol>
           )}
           {timeline.length > tlShown && <button onClick={() => setTlShown(n => n + 50)} className="mt-4 px-4 py-2 rounded-xl bg-brand-gray/10 text-xs font-bold">Show more ({timeline.length - tlShown} left)</button>}
+        </div>
+      )}
+
+      {tab === 'offers' && (
+        <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-3">
+          <OfferPrintsList contactId={contact.id} />
         </div>
       )}
 

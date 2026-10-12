@@ -4,6 +4,7 @@ import { AlertCircle, CheckCircle, FileText, Phone, Plus, Printer, Search, XCirc
 import { Lead, TimelineEvent } from './types';
 import { useAuth } from '../../services/AuthContext';
 import { crmService } from './crmService';
+import { OfferPrintsList } from './OfferPrintsList';
 
 export interface CrmOffersProps {
   leads: Lead[];
@@ -38,6 +39,8 @@ export const CrmOffers: React.FC<CrmOffersProps> = ({ leads, onLeadsUpdated, set
   const [fuDate, setFuDate] = useState('');
   const [markOpen, setMarkOpen] = useState(false);
   const [pickQ, setPickQ] = useState('');
+  const [lbOpen, setLbOpen] = useState(false);
+  const [lbLead, setLbLead] = useState('');
   const [sheetLead, setSheetLead] = useState<Lead | null>(null);
   const [sheet, setSheet] = useState({ client: '', project: '', area: '', price: '', plan: '', valid: '2 days' });
 
@@ -238,6 +241,22 @@ export const CrmOffers: React.FC<CrmOffersProps> = ({ leads, onLeadsUpdated, set
           </div>
         </div>
       )}
+
+      <div className="bento-card space-y-3">
+        <button onClick={() => setLbOpen((v) => !v)} className="w-full flex items-center justify-between text-left">
+          <span className="text-sm font-bold flex items-center gap-2"><Printer size={15} className="text-brand-red" /> Printed in Land Bank</span>
+          <span className="text-xs text-brand-gray">{lbOpen ? 'Hide' : 'Show'}</span>
+        </button>
+        {lbOpen && (
+          <>
+            <select className="input-field" value={lbLead} onChange={(e) => setLbLead(e.target.value)}>
+              <option value="">Choose a lead with an open offer…</option>
+              {offers.slice(0, 500).map(({ l }) => <option key={l.id} value={l.id}>{l.id} · {l.customerName || '—'}{l.companyName ? ` · ${l.companyName}` : ''}</option>)}
+            </select>
+            {lbLead ? <OfferPrintsList leadId={lbLead} compact /> : <p className="text-xs text-brand-gray">Offers printed from the Land Bank page are recorded on the lead and on the customer.</p>}
+          </>
+        )}
+      </div>
 
       {sheetLead && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setSheetLead(null)}>

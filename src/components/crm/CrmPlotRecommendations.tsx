@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { PlotRecord } from './types';
+import { Plot, landBankLink } from '../../lib/plotsService';
 import { MapPin, ExternalLink, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Props {
-  plots: PlotRecord[];
+  plots: Plot[];
+  landBankUrl?: string;
   project: string;
   requiredSize: string | number;
   onNavigateToInventory: () => void;
@@ -12,14 +13,14 @@ interface Props {
 
 interface MergedPlotGroup {
   id: string;
-  plots: PlotRecord[];
+  plots: Plot[];
   totalAreaSqM: number;
-  projectName: string;
+  park: string;
   sector: string;
 }
 
-export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requiredSize, onNavigateToInventory }) => {
-  const [selectedPlot, setSelectedPlot] = useState<PlotRecord | null>(null);
+export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, project, requiredSize, onNavigateToInventory }) => {
+  const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
   const [selectedMergedPlot, setSelectedMergedPlot] = useState<MergedPlotGroup | null>(null);
 
   // Escape closes the detail windows
@@ -48,9 +49,12 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
   if (sizeKnown && minSize > maxSize) { const t = minSize; minSize = maxSize; maxSize = t; }
 
   const targetSize = (minSize + maxSize) / 2;
+  const normName = (v: string) => (v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const wanted = normName(project);
+  const inProject = (pl: Plot) => !!wanted && (normName(pl.park) === wanted || normName(pl.project) === wanted);
 
-  // Only plots that are available to sell (status ATS in the MDS sheet), with a real area
-  const availablePlots = sizeKnown ? plots.filter(plot => plot.status === 'ATS' && plot.areaSqM > 0) : [];
+  // Only plots that are available to sell (Land Bank status 'available'), with a real area
+  const availablePlots = sizeKnown ? plots.filter(plot => plot.status === 'available' && plot.areaSqM > 0) : [];
 
   // Filter plots close to the target size (within 0.7x of minSize to 1.3x of maxSize)
   const matchesSize = (area: number) => {
@@ -59,22 +63,22 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
 
   // Recommendations in the same preferred project
   const preferredProjectRecommendations = availablePlots
-    .filter(plot => plot.projectName === project && matchesSize(plot.areaSqM))
+    .filter(plot => inProject(plot) && matchesSize(plot.areaSqM))
     .sort((a, b) => Math.abs(a.areaSqM - targetSize) - Math.abs(b.areaSqM - targetSize))
     .slice(0, 4);
 
   // Recommendations in alternative projects
   const alternativeProjectRecommendations = availablePlots
-    .filter(plot => plot.projectName !== project && matchesSize(plot.areaSqM))
+    .filter(plot => !inProject(plot) && matchesSize(plot.areaSqM))
     .sort((a, b) => Math.abs(a.areaSqM - targetSize) - Math.abs(b.areaSqM - targetSize))
     .slice(0, 4);
 
   let mergedRecommendations: MergedPlotGroup[] = [];
   if (preferredProjectRecommendations.length === 0 && alternativeProjectRecommendations.length === 0) {
     // Try to find combinations of plots across ALL available plots
-    const groupedByProjAndSector: { [key: string]: PlotRecord[] } = {};
+    const groupedByProjAndSector: { [key: string]: Plot[] } = {};
     availablePlots.forEach(p => {
-      const key = `${p.projectName}::${p.sector || 'N/A'}`;
+      const key = `${p.park}::${p.sector || 'N/A'}`;
       if (!groupedByProjAndSector[key]) groupedByProjAndSector[key] = [];
       groupedByProjAndSector[key].push(p);
     });
@@ -88,7 +92,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
       const [proj, sec] = key.split('::');
       // Map to object with parsed number, filter out NaN, and sort numerically
       const sectorPlots = groupedByProjAndSector[key]
-        .map(p => ({ plot: p, num: getUnitNumber(p.unitCode) }))
+        .map(p => ({ plot: p, num: getUnitNumber(p.unit) }))
         .filter(p => !isNaN(p.num))
         .sort((a, b) => a.num - b.num);
 
@@ -111,10 +115,10 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
               const totalArea = plots.reduce((sum, p) => sum + p.areaSqM, 0);
               if (matchesSize(totalArea)) {
                 mergedRecommendations.push({
-                  id: `merged-${plots[0].id}-${j}`,
+                  id: `merged-${plots[0].key}-${j}`,
                   plots: plots,
                   totalAreaSqM: totalArea,
-                  projectName: proj,
+                  park: proj,
                   sector: sec
                 });
               }
@@ -134,7 +138,6 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
 
   const getStatusBadgeColor = (status: string) => {
     switch (status?.toUpperCase()) {
-      case 'ATS':
       case 'AVAILABLE':
         return 'bg-emerald-100 text-emerald-800 border-emerald-200';
       case 'RESERVED':
@@ -147,6 +150,13 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
         return 'bg-slate-100 text-slate-800 border-slate-200';
     }
   };
+
+  const holdLink = (pl: Plot) => (
+    <a href={landBankLink(landBankUrl, pl.key, 'hold')} target="_blank" rel="noopener noreferrer"
+      className="shrink-0 px-2.5 py-1.5 rounded-lg bg-brand-red text-white text-[10px] font-bold flex items-center gap-1 hover:opacity-90">
+      Hold in Land Bank <ExternalLink size={10} />
+    </a>
+  );
 
   if (!sizeKnown) {
     return (
@@ -186,7 +196,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
           </span>
           <div className="grid grid-cols-1 gap-2">
             {preferredProjectRecommendations.map(plot => (
-              <div key={plot.id} className="p-3.5 bg-brand-light border border-black/5 rounded-xl flex items-center justify-between hover:border-brand-red/20 transition-all">
+              <div key={plot.key} className="p-3.5 bg-brand-light border border-black/5 rounded-xl flex items-center justify-between hover:border-brand-red/20 transition-all">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-white rounded-lg border border-black/5">
                     <MapPin size={14} className="text-brand-red" />
@@ -197,7 +207,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                       className="font-bold text-brand-red text-xs hover:underline text-left cursor-pointer focus:outline-none flex items-center gap-1 bg-transparent border-none p-0"
                       title="Click to view full details of this plot"
                     >
-                      Unit {plot.unitCode} <ExternalLink size={10} className="inline-block opacity-70" />
+                      Unit {plot.unit} <ExternalLink size={10} className="inline-block opacity-70" />
                     </button>
                     <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[10px]">
                       <span className="bg-brand-gray/10 text-brand-gray px-1.5 py-0.5 rounded font-medium">
@@ -214,6 +224,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                     </div>
                   </div>
                 </div>
+                {holdLink(plot)}
               </div>
             ))}
           </div>
@@ -228,7 +239,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
           </span>
           <div className="grid grid-cols-1 gap-2">
             {alternativeProjectRecommendations.map(plot => (
-              <div key={plot.id} className="p-3.5 bg-brand-light border border-black/5 rounded-xl flex items-center justify-between hover:border-brand-red/20 transition-all">
+              <div key={plot.key} className="p-3.5 bg-brand-light border border-black/5 rounded-xl flex items-center justify-between hover:border-brand-red/20 transition-all">
                 <div className="flex items-center gap-3">
                   <div className="p-2.5 bg-white rounded-lg border border-black/5">
                     <MapPin size={14} className="text-brand-gray" />
@@ -240,9 +251,9 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                         className="font-bold text-brand-red text-xs hover:underline text-left cursor-pointer focus:outline-none flex items-center gap-1 bg-transparent border-none p-0"
                         title="Click to view full details of this plot"
                       >
-                        Unit {plot.unitCode} <ExternalLink size={10} className="inline-block opacity-70" />
+                        Unit {plot.unit} <ExternalLink size={10} className="inline-block opacity-70" />
                       </button>
-                      <span className="text-xs text-brand-gray font-normal">({plot.projectName})</span>
+                      <span className="text-xs text-brand-gray font-normal">({plot.park})</span>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[10px]">
                       <span className="bg-brand-gray/10 text-brand-gray px-1.5 py-0.5 rounded font-medium">
@@ -259,6 +270,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                     </div>
                   </div>
                 </div>
+                {holdLink(plot)}
               </div>
             ))}
           </div>
@@ -269,7 +281,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
       {mergedRecommendations.length > 0 && (
         <div className="space-y-2">
           <span className="text-[9px] font-extrabold text-brand-black uppercase tracking-wider block">
-            Suggested Merged Plots ({project})
+            Suggested Merged Plots
           </span>
           <p className="text-[10px] text-brand-gray/80 -mt-1 mb-2">No single plot found. We recommend merging these adjacent plots to reach the target size.</p>
           <div className="grid grid-cols-1 gap-2">
@@ -321,10 +333,10 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                   </div>
                   <div>
                     <h4 className="font-extrabold text-base text-brand-black tracking-tight">
-                      Unit {selectedPlot.unitCode} Details
+                      Unit {selectedPlot.unit} Details
                     </h4>
                     <p className="text-xs text-brand-gray font-semibold tracking-wide uppercase mt-0.5">
-                      {selectedPlot.projectName}
+                      {selectedPlot.park}
                     </p>
                   </div>
                 </div>
@@ -344,7 +356,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                     <span className="text-[10px] font-bold text-brand-gray uppercase tracking-wider block">Status</span>
                     <div className="mt-2.5">
                       <span className={`px-2.5 py-1 text-[10px] font-extrabold rounded-full border ${getStatusBadgeColor(selectedPlot.status)}`}>
-                        {selectedPlot.status || '—'}
+                        {(selectedPlot.status || '—').toUpperCase()}
                       </span>
                     </div>
                   </div>
@@ -367,7 +379,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                   <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-xs">
                     <div>
                       <span className="text-brand-gray font-medium block">Project Name</span>
-                      <span className="font-bold text-brand-black">{selectedPlot.projectName || 'N/A'}</span>
+                      <span className="font-bold text-brand-black">{selectedPlot.park || 'N/A'}</span>
                     </div>
                     <div>
                       <span className="text-brand-gray font-medium block">Sector</span>
@@ -379,7 +391,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                     </div>
                     <div>
                       <span className="text-brand-gray font-medium block">Unit Code</span>
-                      <span className="font-mono font-bold text-brand-black">{selectedPlot.unitCode || 'N/A'}</span>
+                      <span className="font-mono font-bold text-brand-black">{selectedPlot.unit || 'N/A'}</span>
                     </div>
                   </div>
                 </div>
@@ -391,15 +403,15 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                   </h5>
                   <div className="grid grid-cols-2 gap-x-6 gap-y-3 text-xs">
                     <div>
-                      <span className="text-brand-gray font-medium block">Representative Rate</span>
+                      <span className="text-brand-gray font-medium block">List price per sqm</span>
                       <span className="font-mono font-bold text-emerald-600">
-                        {selectedPlot.rfPrice ? `${selectedPlot.rfPrice}` : 'N/A'}
+                        {selectedPlot.listPriceSqm ? `${Math.round(selectedPlot.listPriceSqm).toLocaleString('en-US')} EGP / sqm` : '—'}
                       </span>
                     </div>
                     <div>
-                      <span className="text-brand-gray font-medium block">Total Value (Calculated)</span>
+                      <span className="text-brand-gray font-medium block">List total</span>
                       <span className="font-mono font-bold text-emerald-600">
-                        {selectedPlot.cashValue ? `${selectedPlot.cashValue}` : 'N/A'}
+                        {selectedPlot.listTotal ? `${Math.round(selectedPlot.listTotal).toLocaleString('en-US')} EGP` : '—'}
                       </span>
                     </div>
                   </div>
@@ -407,7 +419,8 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
               </div>
 
               {/* Modal Footer */}
-              <div className="px-6 py-4 bg-slate-50 border-t border-black/5 flex justify-end">
+              <div className="px-6 py-4 bg-slate-50 border-t border-black/5 flex justify-end gap-2">
+                {holdLink(selectedPlot)}
                 <button 
                   onClick={() => setSelectedPlot(null)}
                   className="px-5 py-2.5 bg-brand-black hover:bg-black/95 text-white font-bold text-xs rounded-xl transition-all cursor-pointer shadow-sm"
@@ -438,7 +451,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                       Merged Plot ({selectedMergedPlot.plots.length} Units)
                     </h4>
                     <p className="text-xs text-brand-gray font-semibold tracking-wide uppercase mt-0.5">
-                      {selectedMergedPlot.projectName}
+                      {selectedMergedPlot.park}
                     </p>
                   </div>
                 </div>
@@ -477,9 +490,9 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, project, requir
                   </h5>
                   <div className="space-y-2">
                     {selectedMergedPlot.plots.map(p => (
-                      <div key={p.id} className="flex justify-between text-xs py-2 border-b border-black/5">
-                        <span className="font-bold text-brand-black">Unit {p.unitCode}</span>
-                        <span className="font-mono text-emerald-700">{p.areaSqM.toLocaleString()} sqm</span>
+                      <div key={p.key} className="flex justify-between text-xs py-2 border-b border-black/5">
+                        <span className="font-bold text-brand-black">Unit {p.unit}</span>
+                        <span className="flex items-center gap-3"><span className="font-mono text-emerald-700">{p.areaSqM.toLocaleString()} sqm</span>{holdLink(p)}</span>
                       </div>
                     ))}
                   </div>

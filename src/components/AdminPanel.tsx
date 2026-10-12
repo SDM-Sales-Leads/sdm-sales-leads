@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TeamImport } from './TeamImport';
+import { LandBankConnectionCard } from './LandBankConnectionCard';
 import { Ticket, Category, SLAConfig, RolePermissions, Department, Role, ALL_DEPARTMENTS } from '../types';
 import { adminService } from '../services/adminService';
 import { ticketService } from '../services/ticketService';
@@ -991,6 +992,7 @@ export const AdminPanel: React.FC = () => {
       {activeTab === 'system' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
           <div className="space-y-8">
+          <LandBankConnectionCard />
           <div className="bento-card">
             <h3 className="font-bold text-xl mb-2 flex items-center gap-2">
               <Mail className="text-brand-red" /> Mailbox (Exchange)

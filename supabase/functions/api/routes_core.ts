@@ -363,7 +363,7 @@ route("GET", "/admin/diagnostics", async ({ c, query }) => {
   // every independent read runs at the same time
   const [
     users, tickets, wf, leads, contacts, companies, mailLogs, leadAudit,
-    noOwner, unlinked, noPhone, withPhone, leads24, mail24, lastMail, ingestAuto, cfg, hasKey, hasPass,
+    noOwner, unlinked, noPhone, withPhone, leads24, mail24, lastMail, ingestAuto, cfg, hasKey, hasPass, snap, prints24,
   ] = await Promise.all([
     head("app_users"), head("tickets"), head("workflow_requests"),
     head("crm_leads", live), head("crm_contacts", live), head("crm_companies", live),
@@ -379,6 +379,8 @@ route("GET", "/admin/diagnostics", async ({ c, query }) => {
     getConfig<any>("email_config", {}),
     hasSecret("gemini_key"),
     hasSecret("ews_password"),
+    admin.from("plots_snapshot").select("generated_at,updated_at,plot_count").eq("id", 1).maybeSingle(),
+    head("crm_offer_prints", (q) => q.gte("printed_at", since24)),
   ]);
 
   const counts = { users: users.n, tickets: tickets.n, workflowRequests: wf.n, leads: leads.n, contacts: contacts.n, companies: companies.n, mailLogs: mailLogs.n, leadAudit: leadAudit.n };
@@ -433,6 +435,14 @@ route("GET", "/admin/diagnostics", async ({ c, query }) => {
       lastLogStatus: last?.data?.status || null,
       mailLogs24h: mail24.n,
       leadsFromMail24h: leads24.n,
+    },
+    integration: {
+      landBank: {
+        snapshotAt: (snap as any).data?.generated_at || (snap as any).data?.updated_at || null,
+        count: (snap as any).data?.plot_count ?? 0,
+        ageHours: (snap as any).data?.updated_at ? Math.round((Date.now() - new Date((snap as any).data.updated_at).getTime()) / 360000) / 10 : null,
+        offerPrints24h: prints24.n,
+      },
     },
     leadsHealth: {
       total: leads.n, noOwner: noOwner.n, unlinkedImportedOwners: unlinked.n, missingPhone: noPhone.n,

@@ -18,12 +18,12 @@ import {
 const ID_RE = /^[A-Za-z0-9_.:-]{1,60}$/;
 const METHODS = ["Round Robin", "Least Active Leads", "Least Total Leads", "Random", "Project Based", "Required Size", "Lead Source", "Priority Based", "Working Hours", "VIP Customer Routing", "Company Industry Routing", "Manual Assignment Only"];
 
-async function teamIds(c: Caller): Promise<string[]> {
+export async function teamIds(c: Caller): Promise<string[]> {
   const { data } = await admin.from("app_users").select("id").eq("team_leader_id", c.id);
   return [c.id, ...((data || []).map((r: any) => r.id))];
 }
 
-interface Spec {
+export interface Spec {
   table: string;
   soft: boolean;
   /** columns lifted out of the JSON for this table */
@@ -34,7 +34,7 @@ interface Spec {
   canDelete: (c: Caller, scope: CrmScope) => boolean;
 }
 
-const SPECS: Record<string, Spec> = {
+export const SPECS: Record<string, Spec> = {
   leads: {
     table: "crm_leads", soft: true,
     cols: (d) => leadColumns(d),

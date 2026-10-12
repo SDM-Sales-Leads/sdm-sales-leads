@@ -23,6 +23,7 @@ export const notFound = (m = "Not found") => new HttpError(404, m);
 
 const DEFAULT_ORIGINS = [
   "https://sdm-sales-leads.github.io",
+  "https://sdm-land-bank.github.io",
   "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173",
 ];
 export function allowedOrigins(): string[] {
@@ -95,8 +96,13 @@ export async function getCaller(req: Request): Promise<Caller> {
   }
   const hit = callerCache.get(uid);
   if (hit && hit.until > now) return hit.caller;
-  const { data: u } = await admin.from("app_users").select("*").eq("id", uid).maybeSingle();
-  if (!u || !u.active) { callerCache.delete(uid); throw new HttpError(403, "This account is not active"); }
+  const caller = await callerFromRow((await admin.from("app_users").select("*").eq("id", uid).maybeSingle()).data, uid);
+  return caller;
+}
+
+async function callerFromRow(u: any, cacheKey: string): Promise<Caller> {
+  const now = Date.now();
+  if (!u || !u.active) { callerCache.delete(cacheKey); throw new HttpError(403, "This account is not active"); }
   const { data: rp } = await admin.from("role_permissions").select("perms").eq("role", u.role).maybeSingle();
   const caller: Caller = {
     id: u.id,
@@ -109,8 +115,20 @@ export async function getCaller(req: Request): Promise<Caller> {
     perms: { ...FALLBACK_PERMS, ...(rp?.perms || {}) },
   };
   if (callerCache.size > 400) callerCache.clear();
-  callerCache.set(uid, { until: now + CALLER_TTL, caller });
+  callerCache.set(cacheKey, { until: now + CALLER_TTL, caller });
   return caller;
+}
+
+/** Caller for an already verified e-mail address (used by the Land Bank integration). Matches app_users case-insensitively. */
+export async function callerFromEmail(email: string): Promise<Caller> {
+  const e = String(email || "").trim().toLowerCase();
+  if (!e || e.length > 254) throw new HttpError(403, "This account has no access to Sales Leads");
+  const hit = callerCache.get("email:" + e);
+  if (hit && hit.until > Date.now()) return hit.caller;
+  const { data } = await admin.from("app_users").select("*").ilike("email", e.replace(/[%_\\]/g, (m) => "\\" + m)).limit(2);
+  const rows = (data || []).filter((r: any) => String(r.email || "").toLowerCase() === e);
+  if (rows.length !== 1) throw new HttpError(403, "This account has no access to Sales Leads");
+  return await callerFromRow(rows[0], "email:" + e);
 }
 
 export const isAdmin = (c: Caller) => c.role === "Admin";
