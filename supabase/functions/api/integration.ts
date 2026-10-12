@@ -293,7 +293,7 @@ route("GET", "/crm/offer-prints", async ({ c, query }) => {
     if (!ex || !SPECS.leads.owns(c, scope, team, ex)) throw new HttpError(404, "Lead not found");
     q = q.eq("lead_id", leadId);
   } else {
-    if (plotKey) q = q.contains("plots", [{ key: plotKey }]);
+    if (plotKey) q = q.contains("plots", JSON.stringify([{ key: plotKey }]));
     if (scope === "own" || scope === "team") {
       const ids = scope === "team" ? await teamIds(c) : [c.id];
       q = q.in("printed_by", ids);
@@ -633,7 +633,7 @@ lbRoute("GET", "/integration/offer-stats/plot", async ({ c, query }) => {
   if (!key) throw bad("A plot key is required");
   const limit = Math.max(1, Math.min(100, parseInt(query.get("limit") || "50") || 50));
   const { data, count, error } = await admin.from("crm_offer_prints").select("id,printed_at,offer_type,contact_id,total_value,plan,printed_by_name", { count: "exact" })
-    .contains("plots", [{ key }]).order("printed_at", { ascending: false }).limit(limit);
+    .contains("plots", JSON.stringify([{ key }])).order("printed_at", { ascending: false }).limit(limit);
   if (error) throw new HttpError(500, "Could not load the offers");
   const cm = await contactMap((data || []).map((r: any) => r.contact_id));
   const reqs = (await loadRequests(null, null)).filter((q) => str(q.plot.key, 160) === key);
