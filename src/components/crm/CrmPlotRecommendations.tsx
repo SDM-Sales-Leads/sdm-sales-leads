@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { canonicalParks } from '../../lib/parkAliases';
 import { Plot, landBankLink, trackLbClick } from '../../lib/plotsService';
 import { MapPin, ExternalLink, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -52,30 +53,32 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, le
   const targetSize = (minSize + maxSize) / 2;
   const normName = (v: string) => (v || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
   const wanted = normName(project);
-  const inProject = (pl: Plot) => !!wanted && (normName(pl.park) === wanted || normName(pl.project) === wanted);
+  const aliasParks = canonicalParks(project || '');
+  const inProject = (pl: Plot) => aliasParks.includes(pl.park) || (!!wanted && (normName(pl.park) === wanted || normName(pl.project) === wanted));
 
   // Only plots that are available to sell (Land Bank status 'available'), with a real area
-  const availablePlots = sizeKnown ? plots.filter(plot => plot.status === 'available' && plot.areaSqM > 0) : [];
+  const availablePlots = plots.filter(plot => plot.status === 'available' && plot.areaSqM > 0);
 
   // Filter plots close to the target size (within 0.7x of minSize to 1.3x of maxSize)
   const matchesSize = (area: number) => {
+    if (!sizeKnown) return true;
     return area >= minSize * 0.7 && area <= maxSize * 1.3;
   };
 
   // Recommendations in the same preferred project
   const preferredProjectRecommendations = availablePlots
     .filter(plot => inProject(plot) && matchesSize(plot.areaSqM))
-    .sort((a, b) => Math.abs(a.areaSqM - targetSize) - Math.abs(b.areaSqM - targetSize))
-    .slice(0, 4);
+    .sort((a, b) => sizeKnown ? Math.abs(a.areaSqM - targetSize) - Math.abs(b.areaSqM - targetSize) : a.areaSqM - b.areaSqM)
+    .slice(0, sizeKnown ? 4 : 6);
 
   // Recommendations in alternative projects
   const alternativeProjectRecommendations = availablePlots
-    .filter(plot => !inProject(plot) && matchesSize(plot.areaSqM))
+    .filter(plot => sizeKnown && !inProject(plot) && matchesSize(plot.areaSqM))
     .sort((a, b) => Math.abs(a.areaSqM - targetSize) - Math.abs(b.areaSqM - targetSize))
     .slice(0, 4);
 
   let mergedRecommendations: MergedPlotGroup[] = [];
-  if (preferredProjectRecommendations.length === 0 && alternativeProjectRecommendations.length === 0) {
+  if (sizeKnown && preferredProjectRecommendations.length === 0 && alternativeProjectRecommendations.length === 0) {
     // Try to find combinations of plots across ALL available plots
     const groupedByProjAndSector: { [key: string]: Plot[] } = {};
     availablePlots.forEach(p => {
@@ -153,24 +156,16 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, le
   };
 
   const holdLink = (pl: Plot) => (
-    <a href={landBankLink(landBankUrl, pl.key, 'hold')} target="_blank" rel="noopener noreferrer" onClick={() => trackLbClick(pl.key, 'hold', leadId)}
+    <a href={landBankLink(landBankUrl, pl.key, 'hold', leadId)} target="_blank" rel="noopener noreferrer" onClick={() => trackLbClick(pl.key, 'hold', leadId)}
       className="shrink-0 px-2.5 py-1.5 rounded-lg bg-brand-red text-white text-[10px] font-bold flex items-center gap-1 hover:opacity-90">
       Hold in Land Bank <ExternalLink size={10} />
     </a>
   );
 
-  if (!sizeKnown) {
-    return (
-      <div className="mt-4 p-4 bg-brand-light border border-black/5 rounded-xl text-center">
-        <p className="text-xs text-brand-gray font-semibold">Required size is not specified on this lead, so no plots can be recommended.</p>
-      </div>
-    );
-  }
-
   if (totalRecsCount === 0) {
     return (
       <div className="mt-4 p-4 bg-brand-light border border-black/5 rounded-xl text-center">
-        <p className="text-xs text-brand-gray font-semibold">No plot recommendations found matching the size criteria ({minSize.toLocaleString()} - {maxSize.toLocaleString()} sqm).</p>
+        <p className="text-xs text-brand-gray font-semibold">{sizeKnown ? `No plot recommendations found matching the size criteria (${minSize.toLocaleString()} - ${maxSize.toLocaleString()} sqm).` : 'Required size missing and the project is not recognised as a Land Bank park, so no plots can be recommended.'}</p>
       </div>
     );
   }
@@ -188,6 +183,8 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, le
           View Full Inventory <ExternalLink size={10} />
         </button>
       </div>
+
+      {!sizeKnown && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 font-semibold">Required size missing — recommendations use the project only.</p>}
 
       {/* Target Project Recommendations */}
       {preferredProjectRecommendations.length > 0 && (

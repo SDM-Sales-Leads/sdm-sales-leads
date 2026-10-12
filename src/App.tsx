@@ -24,6 +24,7 @@ import { Menu } from 'lucide-react';
 import { Logo } from './constants';
 import { useViewMode } from './lib/viewMode';
 import { OldViewShell } from './components/OldViewShell';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const AppContent: React.FC = () => {
   const { user, permissions, isLoading, mustChangePassword } = useAuth();
@@ -137,6 +138,7 @@ const AppContent: React.FC = () => {
   }
 
   const pageContent = (
+    <ErrorBoundary resetKey={`${activeTab}|${crmSubTab}`}>
             <Suspense fallback={<div className="p-8 text-sm text-brand-gray">Loading…</div>}>
               <motion.div
                 key={selectedTicket ? `detail-${selectedTicket.id}` : activeTab}
@@ -174,6 +176,7 @@ const AppContent: React.FC = () => {
                 )}
               </motion.div>
             </Suspense>
+    </ErrorBoundary>
   );
 
   if (viewMode === 'old') {

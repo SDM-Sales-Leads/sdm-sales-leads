@@ -70,10 +70,10 @@ export function loadPlots(force = false): Promise<PlotsState> {
 }
 
 /** Link into the Land Bank page (#hold= to start a hold request, #plot= to open the plot card). */
-export function landBankLink(base: string | undefined, key: string, kind: 'hold' | 'plot'): string {
+export function landBankLink(base: string | undefined, key: string, kind: 'hold' | 'plot', leadId?: string): string {
   let b = (base || DEFAULT_LAND_BANK_URL).trim();
   try { const u = new URL(b); if (u.protocol !== 'https:' && u.protocol !== 'http:') b = DEFAULT_LAND_BANK_URL; } catch { b = DEFAULT_LAND_BANK_URL; }
-  return `${b.split('#')[0]}#${kind}=${encodeURIComponent(key)}`;
+  return `${b.split('#')[0]}#${kind}=${encodeURIComponent(key)}${leadId && kind === 'hold' ? `&lead=${encodeURIComponent(leadId)}` : ''}`;
 }
 
 export function agoText(iso: string | null | undefined): string {

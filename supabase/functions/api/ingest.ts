@@ -3,6 +3,7 @@
 import {
   admin, pageAll, asUuid, getConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
 } from "./lib.ts";
+import { canonicalPark } from "./parks.ts";
 import { getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
 
 export const DEFAULT_QUEUE = {
@@ -64,19 +65,24 @@ const num = (v: any): number | null => {
 export function sanitizeParsed(p: any): Parsed {
   p = p && typeof p === "object" ? p : {};
   const email = str(p.email, 254).toLowerCase();
+  const rawProject = str(p.project, 120);
+  const park = canonicalPark(rawProject);
+  let description = str(p.description, 2000);
+  // the lead keeps what the customer wrote; the project field gets the canonical park name
+  if (park && rawProject && rawProject !== park && !description.includes(rawProject)) description = `${description}${description ? "\n" : ""}Project (as written): ${rawProject}`.slice(0, 2000);
   const priority = PRIORITIES.find((x) => x.toLowerCase() === str(p.priority, 20).toLowerCase()) || "";
   return {
     customerName: str(p.customerName, 120),
     phoneNumber: str(p.phoneNumber, 40),
     email: isEmail(email) ? email : "",
     companyName: str(p.companyName, 160),
-    project: str(p.project, 120),
+    project: park || rawProject,
     plotType: str(p.plotType, 80),
     requiredSize: num(p.requiredSize),
     budget: num(p.budget),
     priority,
     source: str(p.source, 80),
-    description: str(p.description, 2000),
+    description,
     inquiryType: str(p.inquiryType, 80),
   };
 }

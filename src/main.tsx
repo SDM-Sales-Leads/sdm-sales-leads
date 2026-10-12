@@ -7,6 +7,16 @@ import { installApiFetch } from './lib/api';
 installStorageGuard();
 installApiFetch();
 
+// A new version replaces the page files on the server. A tab that was opened before still points at the old file names:
+// opening a page that was not loaded yet then fails. Reload once (the new version) instead of showing a blank screen.
+window.addEventListener('vite:preloadError', (e) => {
+  e.preventDefault();
+  try {
+    const last = Number(sessionStorage.getItem('sdm_chunk_reload') || 0);
+    if (Date.now() - last > 60_000) { sessionStorage.setItem('sdm_chunk_reload', String(Date.now())); location.reload(); }
+  } catch { location.reload(); }
+});
+
 import App from './App.tsx';
 import './index.css';
 

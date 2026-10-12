@@ -648,3 +648,24 @@ lbRoute("GET", "/integration/offer-stats/plot", async ({ c, query }) => {
     }),
   };
 });
+
+// ---------------------------------------------------------------------------------------------
+// 10. lead brief for the Land Bank hold dialog
+// ---------------------------------------------------------------------------------------------
+lbRoute("GET", "/integration/lead-brief", async ({ c, query }) => {
+  await rateLimit(`lbbrief:${c.id}`, 60, 60);
+  const id = str(query.get("leadId"), 60);
+  if (!ID_RE.test(id)) throw new HttpError(404, "Lead not found");
+  const scope = crmScope(c), team = scope === "team" ? await teamIds(c) : [];
+  const { data: l } = await admin.from("crm_leads").select("id,data,assigned_to,created_by,status").eq("id", id).is("deleted_at", null).maybeSingle();
+  if (!l || !SPECS.leads.owns(c, scope, team, l)) throw new HttpError(404, "Lead not found");
+  let ownerEmail = "", ownerName = str(l.data?.assignedSalespersonName, 120);
+  if (l.assigned_to) {
+    const { data: u } = await admin.from("app_users").select("name,email").eq("id", l.assigned_to).maybeSingle();
+    if (u) { ownerEmail = str(u.email, 254); ownerName = str(u.name, 120) || ownerName; }
+  }
+  return {
+    success: true, leadId: l.id, customerName: str(l.data?.customerName, 200), companyName: str(l.data?.companyName, 200),
+    ownerName, ownerEmail, phoneLast4: last4(l.data?.phoneNumber),
+  };
+});

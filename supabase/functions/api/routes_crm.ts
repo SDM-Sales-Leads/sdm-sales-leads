@@ -9,6 +9,7 @@ import {
   needAdmin, needCrm, normEmail, normName, normPhone, nowIso, rateLimit, rid, setConfig, str,
 } from "./lib.ts";
 import { route } from "./router.ts";
+import { canonicalPark } from "./parks.ts";
 import { sanitizeLead } from "./leadrules.ts";
 import { getBody, htmlToText, listFolder, loadEws } from "./ews.ts";
 import {
@@ -388,6 +389,25 @@ route("POST", "/crm/fix-mail-leads", async ({ c }) => {
     if (d.source === "Email") { d.source = ""; ch = true; }
     if (ch) { await admin.from("crm_leads").update({ data: d }).eq("id", r.id); fixed++; }
   }
+  return { success: true, checked: rows.length, fixed };
+});
+// admin only: re-map the project of existing leads to the canonical Land Bank park name (the customer's own words stay in the description)
+route("POST", "/crm/fix-mail-projects", async ({ c }) => {
+  needAdmin(c);
+  await rateLimit(`fixproj:${c.id}`, 3600, 10);
+  const rows = await pageAll((a, b) => admin.from("crm_leads").select("id,data,updated_at").is("deleted_at", null).order("id").range(a, b), 50000);
+  let fixed = 0;
+  for (const r of rows as any[]) {
+    const raw = str(r.data?.project, 120);
+    const park = raw ? canonicalPark(raw) : "";
+    if (!park || park === raw) continue;
+    const d = { ...r.data, project: park };
+    const desc = String(d.description || "");
+    if (!desc.includes(raw)) d.description = `${desc}${desc ? "\n" : ""}Project (as written): ${raw}`.slice(0, 4000);
+    const u = await admin.from("crm_leads").update({ data: d }).eq("id", r.id).eq("updated_at", r.updated_at).select("id");
+    if (u.data?.length) { fixed++; await admin.from("crm_lead_audit").insert({ lead_id: r.id, actor_id: c.id, actor_name: c.name, action: "edit", from_value: `project=${raw}`, to_value: `project=${park}`, note: "canonical park name" }); }
+  }
+  await logActivity(c, "Fix lead projects", `${fixed} lead(s) mapped to park names`, "admin");
   return { success: true, checked: rows.length, fixed };
 });
 route("POST", "/crm/sync-inbox", async ({ c }) => { needCrm(c); return await runIngest(c); });

@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ExternalLink, Trash2 } from 'lucide-react';
 import { AssignedPlot, Lead, TimelineEvent } from './types';
 import { Plot, landBankLink, trackLbClick } from '../../lib/plotsService';
+import { canonicalParks } from '../../lib/parkAliases';
 import { CrmPlotRecommendations } from './CrmPlotRecommendations';
 
 const MAX = 20;
@@ -20,8 +21,10 @@ interface Props {
 export const LeadPlotsPanel: React.FC<Props> = ({ lead, plots, landBankUrl, user, onNavigateToInventory, onSave }) => {
   const mode = lead.plotMode || 'recommend';
   const assigned = lead.assignedPlots || [];
-  const [park, setPark] = useState(''); const [sector, setSector] = useState(''); const [key, setKey] = useState('');
+  const leadParks = useMemo(() => canonicalParks(lead.project || ''), [lead.project]);
+  const [park, setPark] = useState(() => (leadParks.length === 1 ? leadParks[0] : '')); const [sector, setSector] = useState(''); const [key, setKey] = useState('');
 
+  useEffect(() => { setPark(leadParks.length === 1 ? leadParks[0] : ''); setSector(''); setKey(''); }, [lead.id, leadParks]);
   const have = useMemo(() => new Set(assigned.map((a) => a.key)), [assigned]);
   const avail = useMemo(() => plots.filter((p) => p.status === 'available' && !have.has(p.key)), [plots, have]);
   const parks = useMemo(() => [...new Set(avail.map((p) => p.park))].filter(Boolean).sort(collator.compare), [avail]);
@@ -67,7 +70,7 @@ export const LeadPlotsPanel: React.FC<Props> = ({ lead, plots, landBankUrl, user
                   <div className="text-[11px] text-brand-gray">{nf(a.areaSqm)} m² · {nf(a.listPriceSqm)} EGP/m² · {nf(a.listTotal)} EGP · <span className="font-bold capitalize">{status}</span></div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <a href={landBankLink(landBankUrl, a.key, status === 'available' ? 'hold' : 'plot')} target="_blank" rel="noopener noreferrer"
+                  <a href={landBankLink(landBankUrl, a.key, status === 'available' ? 'hold' : 'plot', lead.id)} target="_blank" rel="noopener noreferrer"
                     onClick={() => trackLbClick(a.key, status === 'available' ? 'hold' : 'open', lead.id)}
                     className="px-2.5 py-1.5 rounded-lg bg-brand-red text-white text-[11px] font-bold flex items-center gap-1">{status === 'available' ? 'Hold in Land Bank' : 'Open in Land Bank'} <ExternalLink size={10} /></a>
                   <button onClick={() => remove(a)} aria-label="Remove plot" className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50"><Trash2 size={14} /></button>
