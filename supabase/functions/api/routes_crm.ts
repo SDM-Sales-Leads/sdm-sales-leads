@@ -12,7 +12,7 @@ import { route } from "./router.ts";
 import { sanitizeLead } from "./leadrules.ts";
 import { getBody, htmlToText, listFolder, loadEws } from "./ews.ts";
 import {
-  chooseAgent, DEFAULT_QUEUE, ensureContactAndCompany, ingestInbox, leadColumns, loadQueue, nextId, parseMail,
+  chooseAgent, DEFAULT_QUEUE, ensureContactAndCompany, ensureContactsAndCompaniesBulk, ingestInbox, leadColumns, loadQueue, nextId, parseMail,
 } from "./ingest.ts";
 
 const ID_RE = /^[A-Za-z0-9_.:-]{1,60}$/;
@@ -142,12 +142,20 @@ for (const [name, spec] of Object.entries(SPECS)) {
     const audit = (leadId: string, a: { action: string; from?: string; to?: string; note?: string }) =>
       auditRows.push({ lead_id: leadId, actor_id: c.id, actor_name: c.name, action: a.action, from_value: a.from ?? null, to_value: a.to ?? null, note: a.note ?? null });
 
+    // one query for all existing rows instead of one per row
+    const exMap = new Map<string, any>();
+    const wantIds = upserts.map((u: any) => u?.id).filter((x: any) => typeof x === "string" && ID_RE.test(x));
+    for (let i = 0; i < wantIds.length; i += 100) {
+      const { data: rows } = await admin.from(spec.table).select("*").in("id", wantIds.slice(i, i + 100));
+      (rows || []).forEach((x: any) => exMap.set(x.id, x));
+    }
+    const newRows: { id: string; row: any; lead?: any }[] = [];
     for (const raw of upserts) {
       if (!isObj(raw) || typeof raw.id !== "string" || !ID_RE.test(raw.id)) { rejected.push({ id: String(raw?.id ?? ""), reason: "bad id" }); continue; }
       let d: any = clean(raw);
       const rev = d._rev; delete d._rev;
       let id = d.id;
-      const { data: ex } = await admin.from(spec.table).select("*").eq("id", id).maybeSingle();
+      const ex = exMap.get(id) || null;
       try {
         if (ex) {
           if (ex.deleted_at) { rejected.push({ id, reason: "was deleted" }); continue; }
@@ -228,13 +236,8 @@ for (const [name, spec] of Object.entries(SPECS)) {
             const err = externalRule(d, null, c, scope);
             if (err) { rejected.push({ id, reason: err }); continue; }
           }
-          const ins = await admin.from(spec.table).insert({ id, data: d, ...spec.cols(d, c), ...(name === "leads" ? { created_by: c.id } : {}) }).select("*").single();
-          if (ins.error) {
-            if (name === "leads" && d.emailId) { rejected.push({ id, reason: "a lead for this e-mail already exists" }); continue; }
-            throw new Error("insert");
-          }
-          saved.push({ id, _rev: ins.data.updated_at || ins.data.created_at });
-          if (name === "leads") await ensureContactAndCompany(d).catch(() => {});
+          // new rows are inserted together after the loop (one query per batch)
+          newRows.push({ id, row: { id, data: d, ...spec.cols(d, c), ...(name === "leads" ? { created_by: c.id } : {}) }, lead: name === "leads" ? d : undefined });
         }
       } catch {
         rejected.push({ id, reason: "could not be saved" });
@@ -253,6 +256,20 @@ for (const [name, spec] of Object.entries(SPECS)) {
           else await admin.from(spec.table).delete().eq("id", id);
         }
         if (deletes.length) await logActivity(c, `Delete CRM ${name}`, `${deletes.length} row(s) deleted`, "ticket");
+      }
+    }
+    if (newRows.length) {
+      const ins = await admin.from(spec.table).insert(newRows.map((n) => n.row)).select("id,updated_at,created_at");
+      if (!ins.error) {
+        (ins.data || []).forEach((x: any) => saved.push({ id: x.id, _rev: x.updated_at || x.created_at }));
+        if (name === "leads") await ensureContactsAndCompaniesBulk(newRows.map((n) => n.lead)).catch(() => {});
+      } else {
+        // one bad row must not sink the batch: fall back to row-by-row so the culprit is named
+        for (const n of newRows) {
+          const one = await admin.from(spec.table).insert(n.row).select("id,updated_at,created_at").single();
+          if (one.error) rejected.push({ id: n.id, reason: name === "leads" && n.lead?.emailId ? "a lead for this e-mail already exists" : "could not be saved" });
+          else { saved.push({ id: n.id, _rev: one.data.updated_at || one.data.created_at }); if (name === "leads") await ensureContactAndCompany(n.lead).catch(() => {}); }
+        }
       }
     }
     if (auditRows.length) await admin.from("crm_lead_audit").insert(auditRows.slice(0, 2000));
