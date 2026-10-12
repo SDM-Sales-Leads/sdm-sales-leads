@@ -36,6 +36,18 @@ export const PRIORITIES = ['VIP', 'High', 'Medium', 'Low'];
 export const PRIORITY_ORDER: Record<string, number> = { VIP: 0, Urgent: 0, High: 1, Medium: 2, Normal: 2, Low: 3 };
 
 export const SOURCES = ['Website', 'Billboard', 'Google SEM', 'Facebook', 'Instagram', 'LinkedIn', 'YouTube', 'Radio', 'Mobile App', 'Event / Exhibition', 'Management', 'Referral', 'Personal', 'Walk-In', 'BD Research'];
+// Marketing CHANNEL (main) versus lead SOURCE (sub). The channel is where the lead reached us; the source is what the customer says brought them.
+export const CHANNELS = ['Mobile App', 'Call Center', 'Facebook Leads', 'Walk-in'] as const;
+export const NO_CHANNEL = 'Not set';
+export function channelOf(l: { channel?: string; source?: string }): string {
+  const c = (l.channel || '').trim();
+  if (c) return CHANNELS.find((x) => x.toLowerCase() === c.toLowerCase()) || c;
+  const s = (l.source || '').trim().toLowerCase();
+  if (s === 'walk-in' || s === 'walk in') return 'Walk-in';
+  if (s === 'mobile app') return 'Mobile App';
+  if (s === 'facebook' || s === 'instagram') return 'Facebook Leads';   // the old system's Facebook / Instagram leads came from the Facebook lead forms
+  return NO_CHANNEL;
+}
 export const NON_MARKETING_SOURCES = ['Personal', 'Management', 'BD Research'];
 export const INDUSTRIES = ['Engineering', 'Pharmaceutical', 'Textile', 'Chemical', 'Food & Beverage (F&B)', 'Logistics', 'Heavy Industry', 'Services', 'Automotive', 'Warehouse'];
 export const PROJECTS = ['Industria October', 'Industria Sokhna', 'Industria Asher', 'Industria East', 'Industria West', 'Industria Sadat', 'Industria New Sadat', 'Industria Borg El Arab', 'Industria New Damietta', 'SOKHNA360', 'Al Oula', 'Industria Ras Al Hekma', 'El Minya Green Park', 'Industria Safaga', 'Elsewedy Industrial City (Tanzania)', 'Industria Iraq', 'Other'];

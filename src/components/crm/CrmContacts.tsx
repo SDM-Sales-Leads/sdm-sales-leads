@@ -27,64 +27,75 @@ import {
   Trash2,
   Download,
   Square,
-  CheckSquare
+  CheckSquare,
+  MessageCircle,
+  ArrowUp,
+  ArrowDown,
+  ExternalLink
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { PagerBar } from './LeadListParts';
+import { Customer360, ContactAgg, EMPTY_AGG, aggregateLeads, indexLeadsByPhone, fmtEgp, waLink } from './Customer360';
+import { CHANNELS, phoneIntl } from './leadConfig';
 import { useDebounced, makeSearchIndex, usePagedList } from './usePagedList';
 
 const phoneKey = (v?: string) => normalizePhone(v || '');
 const contactText = makeSearchIndex<Contact>(c => `${c.serialNumber || ''} ${c.name || ''} ${c.phoneNumber || ''} ${c.email || ''} ${c.company || ''} ${c.city || ''}`);
-interface ContactStat { totalLeads: number; wonDeals: number; lostDeals: number }
-const NO_STAT: ContactStat = { totalLeads: 0, wonDeals: 0, lostDeals: 0 };
-
+const dashv = (v?: string | number | null) => (v === undefined || v === null || v === '' ? '—' : String(v));
 interface ContactRowProps {
   c: Contact;
-  stats: ContactStat;
+  agg: ContactAgg;
+  latestLeadId?: string;
+  cols: Record<string, boolean>;
   isSelected: boolean;
   onToggle: (id: string) => void;
   onOpen: (c: Contact) => void;
+  onLead: (id: string) => void;
 }
-const ContactRow = React.memo<ContactRowProps>(({ c, stats, isSelected, onToggle, onOpen }) => (
-  <tr className={`hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
-    <td className="py-3.5 px-4">
-      <button onClick={() => onToggle(c.id)} className="focus:outline-none">
-        {isSelected ? (
-          <CheckSquare size={16} className="text-brand-red" />
-        ) : (
-          <Square size={16} className="text-brand-gray/60" />
-        )}
-      </button>
-    </td>
-    <td className="py-3.5 px-4 font-bold text-brand-black">
-      <div className="flex items-center gap-2">
-        <span className="font-mono text-[9px] text-brand-red bg-brand-red/10 px-1.5 py-0.5 rounded font-bold">{c.serialNumber || 'N/A'}</span>
-        <span>{c.name}</span>
-      </div>
-    </td>
-    <td className="py-3.5 px-3 font-mono text-brand-gray">{c.phoneNumber}</td>
-    <td className="py-3.5 px-3 font-semibold text-brand-black">{c.company || 'Private Customer'}</td>
-    <td className="py-3.5 px-3 text-center">
-      <span className="bg-brand-red/10 text-brand-red px-2 py-0.5 rounded-full font-mono text-[10px] font-bold">
-        {stats.totalLeads} Leads
-      </span>
-    </td>
-    <td className="py-3.5 px-3 text-center text-[10px] font-mono">
-      <span className="text-emerald-700 font-bold">{stats.wonDeals} W</span>
-      <span className="mx-1 text-brand-gray">/</span>
-      <span className="text-rose-600 font-bold">{stats.lostDeals} L</span>
-    </td>
-    <td className="py-3.5 px-4 text-right">
-      <button
-        onClick={() => onOpen(c)}
-        className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-3 py-1 rounded-lg font-bold"
-      >
-        Details
-      </button>
-    </td>
-  </tr>
-));
+const ContactRow = React.memo<ContactRowProps>(({ c, agg, latestLeadId, cols, isSelected, onToggle, onOpen, onLead }) => {
+  const tel = phoneIntl(c.phoneNumber) ? c.phoneNumber : '';
+  const wa = waLink(c.phoneNumber, c.name);
+  const stop = (e: React.MouseEvent) => e.stopPropagation();
+  return (
+    <tr onClick={() => onOpen(c)} className={`cursor-pointer hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
+      <td className="py-3 px-4" onClick={stop}>
+        <button onClick={() => onToggle(c.id)} className="focus:outline-none" aria-label="Select contact">
+          {isSelected ? <CheckSquare size={16} className="text-brand-red" /> : <Square size={16} className="text-brand-gray/60" />}
+        </button>
+      </td>
+      {cols.id && <td className="py-3 px-3"><span className="font-mono text-[10px] text-brand-red bg-brand-red/10 px-1.5 py-0.5 rounded font-bold">{c.serialNumber || '—'}</span></td>}
+      {cols.name && (
+        <td className="py-3 px-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 shrink-0 rounded-full bg-brand-red/10 text-brand-red flex items-center justify-center font-black text-xs">{(c.name || '?').charAt(0).toUpperCase()}</div>
+            <div className="min-w-0">
+              <div className="font-bold text-brand-black truncate max-w-[200px]">{c.name}</div>
+              {c.jobTitle && <div className="text-[10px] text-brand-gray truncate max-w-[200px]">{c.jobTitle}</div>}
+            </div>
+          </div>
+        </td>
+      )}
+      {cols.company && <td className="py-3 px-3 font-semibold text-brand-black">{c.company || <span className="text-brand-gray font-medium">Private</span>}</td>}
+      {cols.phone && <td className="py-3 px-3 font-mono text-brand-gray whitespace-nowrap">{dashv(c.phoneNumber)}</td>}
+      {cols.email && <td className="py-3 px-3 text-brand-gray truncate max-w-[180px]">{dashv(c.email)}</td>}
+      {cols.leads && <td className="py-3 px-3 text-center"><span className="bg-brand-gray/10 text-brand-black px-2 py-0.5 rounded-full font-mono text-[10px] font-bold">{agg.total}</span></td>}
+      {cols.open && <td className="py-3 px-3 text-center"><span className={`px-2 py-0.5 rounded-full font-mono text-[10px] font-bold ${agg.open ? 'bg-blue-50 text-blue-700' : 'text-brand-gray'}`}>{agg.open}</span></td>}
+      {cols.won && <td className="py-3 px-3 text-right font-mono text-[11px] font-bold text-emerald-700 whitespace-nowrap">{agg.won ? `${fmtEgp(agg.wonValue)} (${agg.won})` : '—'}</td>}
+      {cols.last && <td className="py-3 px-3 font-mono text-brand-gray whitespace-nowrap">{dashv(agg.lastActivity)}</td>}
+      {cols.channels && <td className="py-3 px-3 text-[11px]">{agg.channels.length ? agg.channels.join(', ') : '—'}</td>}
+      <td className="py-3 px-3 text-right whitespace-nowrap" onClick={stop}>
+        <div className="inline-flex items-center gap-1">
+          {tel ? <a href={`tel:${tel}`} title="Call" className="p-1.5 rounded-lg bg-brand-gray/10 hover:bg-brand-black hover:text-white text-brand-black"><Phone size={13} /></a> : null}
+          {wa ? <a href={wa} target="_blank" rel="noopener noreferrer" title="WhatsApp" className="p-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-700"><MessageCircle size={13} /></a> : null}
+          {latestLeadId ? <button onClick={() => onLead(latestLeadId)} title={`Open lead ${latestLeadId}`} className="p-1.5 rounded-lg bg-brand-red/10 hover:bg-brand-red hover:text-white text-brand-red"><ExternalLink size={13} /></button> : null}
+        </div>
+      </td>
+    </tr>
+  );
+});
 ContactRow.displayName = 'ContactRow';
+
+type SortKey = 'serial' | 'name' | 'company' | 'phone' | 'leads' | 'open' | 'won' | 'last';
 
 // Predefined lists of option strings for standard values
 const JOB_TITLE_OPTIONS = [
@@ -477,23 +488,21 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
   const [notice, setNotice] = useState('');
 
   // Column management
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(['name', 'phone', 'company', 'pipelines', 'wonLost', 'view']);
-  const columns = {
-    name: visibleColumns.includes('name'),
-    phone: visibleColumns.includes('phone'),
-    company: visibleColumns.includes('company'),
-    pipelines: visibleColumns.includes('pipelines'),
-    wonLost: visibleColumns.includes('wonLost'),
-    view: visibleColumns.includes('view'),
-  };
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(['id', 'name', 'company', 'phone', 'email', 'leads', 'open', 'won', 'last', 'channels']);
+  const columns = Object.fromEntries(['id', 'name', 'company', 'phone', 'email', 'leads', 'open', 'won', 'last', 'channels'].map(k => [k, visibleColumns.includes(k)])) as Record<string, boolean>;
   const columnsList = [
-    { key: 'name', label: 'Contact Name' },
-    { key: 'phone', label: 'Unique Phone Key' },
-    { key: 'company', label: 'Associated Company' },
-    { key: 'pipelines', label: 'Pipelines' },
-    { key: 'wonLost', label: 'Won / Lost' },
-    { key: 'view', label: 'View' },
+    { key: 'id', label: 'Customer ID' },
+    { key: 'name', label: 'Name' },
+    { key: 'company', label: 'Company' },
+    { key: 'phone', label: 'Phone' },
+    { key: 'email', label: 'Email' },
+    { key: 'leads', label: 'Leads' },
+    { key: 'open', label: 'Open leads' },
+    { key: 'won', label: 'Won value' },
+    { key: 'last', label: 'Last activity' },
+    { key: 'channels', label: 'Channels' },
   ];
+  const colCount = 2 + visibleColumns.filter(k => columns[k]).length;
 
   // Form states
   const [newContactForm, setNewContactForm] = useState({
@@ -531,15 +540,15 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
     status: 'Active' as 'Active' | 'Inactive'
   });
 
-  // Cross-link hook: auto-select contact if set in localStorage
+  // Cross-link hooks: open a contact's Customer 360 from other screens
   useEffect(() => {
-    const contactPhone = localStorage.getItem('selected_crm_contact_phone');
-    if (contactPhone) {
-      const found = contacts.find(c => phoneKey(c.phoneNumber) === phoneKey(contactPhone));
-      if (found) {
-        setSelectedContact(found);
-      }
-      localStorage.removeItem('selected_crm_contact_phone');
+    let id: string | null = null, phone: string | null = null;
+    try { id = localStorage.getItem('selected_contact_id'); phone = localStorage.getItem('selected_crm_contact_phone'); } catch { /* ignore */ }
+    if (!id && !phone) return;
+    const found = (id && contacts.find(c => c.id === id || c.serialNumber === id)) || (phone && contacts.find(c => phoneKey(c.phoneNumber) === phoneKey(phone))) || null;
+    if (found) setSelectedContact(found);
+    if (found || contacts.length) {
+      try { localStorage.removeItem('selected_contact_id'); localStorage.removeItem('selected_crm_contact_phone'); } catch { /* ignore */ }
     }
   }, [contacts]);
 
@@ -552,14 +561,78 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // Filter Contacts
+  // Leads indexed by contact once; aggregates per contact computed once per data change
+  const leadsByPhone = useMemo(() => indexLeadsByPhone(leads), [leads]);
+  const aggMap = useMemo(() => {
+    const m = new Map<string, ContactAgg>();
+    leadsByPhone.forEach((ls, k) => m.set(k, aggregateLeads(ls)));
+    return m;
+  }, [leadsByPhone]);
+  const latestLead = useMemo(() => {
+    const m = new Map<string, string>();
+    leadsByPhone.forEach((ls, k) => { let b = ls[0]; for (const l of ls) if ((l.date || '') > (b.date || '')) b = l; m.set(k, b.id); });
+    return m;
+  }, [leadsByPhone]);
+  const aggOf = useCallback((c: Contact) => aggMap.get(phoneKey(c.phoneNumber)) || EMPTY_AGG, [aggMap]);
+
+  const [fCompany, setFCompany] = useState('');
+  const [fOwner, setFOwner] = useState('');
+  const [fChannel, setFChannel] = useState('');
+  const [fCity, setFCity] = useState('');
+  const [fLeads, setFLeads] = useState<'' | 'open' | 'won' | 'none'>('');
+  const [sortKey, setSortKey] = useState<SortKey>('serial');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const toggleSort = (k: SortKey) => {
+    if (k === sortKey) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(k); setSortDir(k === 'name' || k === 'company' || k === 'phone' ? 'asc' : 'desc'); }
+  };
+  const filterOptions = useMemo(() => {
+    const co = new Set<string>(), ci = new Set<string>(), ow = new Set<string>();
+    contacts.forEach(c => { if (c.company) co.add(c.company); if (c.city) ci.add(c.city); });
+    aggMap.forEach(a => a.owners.forEach(o => ow.add(o)));
+    const sort = (x: Set<string>) => [...x].sort((a, b) => a.localeCompare(b));
+    return { companies: sort(co), cities: sort(ci), owners: sort(ow) };
+  }, [contacts, aggMap]);
+
   const debouncedSearch = useDebounced(searchTerm, 250);
   const filteredContacts = useMemo(() => {
     const q = debouncedSearch.toLowerCase();
-    return q ? contacts.filter(c => contactText(c).includes(q)) : contacts;
-  }, [contacts, debouncedSearch]);
-  const { pageRows, page, pageSize, setPage, setPageSize, allShown, more } = usePagedList(filteredContacts, 'sid_contacts_page_size', debouncedSearch);
+    let rows = q ? contacts.filter(c => contactText(c).includes(q)) : contacts.slice();
+    if (fCompany) rows = rows.filter(c => c.company === fCompany);
+    if (fCity) rows = rows.filter(c => c.city === fCity);
+    if (fOwner || fChannel || fLeads) {
+      rows = rows.filter(c => {
+        const a = aggOf(c);
+        if (fOwner && !a.owners.includes(fOwner)) return false;
+        if (fChannel && !a.channels.includes(fChannel)) return false;
+        if (fLeads === 'open' && !a.open) return false;
+        if (fLeads === 'won' && !a.won) return false;
+        if (fLeads === 'none' && a.total) return false;
+        return true;
+      });
+    }
+    const dir = sortDir === 'asc' ? 1 : -1;
+    const str = (x?: string) => (x || '').toLowerCase();
+    const val = (c: Contact): string | number => {
+      const a = aggOf(c);
+      switch (sortKey) {
+        case 'name': return str(c.name);
+        case 'company': return str(c.company);
+        case 'phone': return c.phoneNumber || '';
+        case 'leads': return a.total;
+        case 'open': return a.open;
+        case 'won': return a.wonValue;
+        case 'last': return a.lastActivity;
+        default: return c.serialNumber || '';
+      }
+    };
+    return rows.sort((x, y) => { const a = val(x), b = val(y); return (a < b ? -1 : a > b ? 1 : 0) * dir; });
+  }, [contacts, debouncedSearch, fCompany, fCity, fOwner, fChannel, fLeads, sortKey, sortDir, aggOf]);
+  const resetKey = `${debouncedSearch}|${fCompany}|${fCity}|${fOwner}|${fChannel}|${fLeads}|${sortKey}|${sortDir}`;
+  const { pageRows, page, pageSize, setPage, setPageSize, allShown, more } = usePagedList(filteredContacts, 'sid_contacts_page_size', resetKey);
   const selectedSet = useMemo(() => new Set(selectedContactIds), [selectedContactIds]);
+  const openLead = useCallback((id: string) => { try { localStorage.setItem('selected_lead_id', id); } catch { /* ignore */ } setActiveSubTab?.('leads'); }, [setActiveSubTab]);
+  const anyFilter = !!(fCompany || fCity || fOwner || fChannel || fLeads || searchTerm);
 
   // Export to CSV helper
   const exportToCSV = () => {
@@ -604,24 +677,6 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
     document.body.removeChild(link);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-
-  // Aggregate stats per contact
-  const contactStats = useMemo(() => {
-    const stats = new Map<string, ContactStat>();
-    contacts.forEach(c => {
-      const k = phoneKey(c.phoneNumber);
-      if (!stats.has(k)) stats.set(k, { totalLeads: 0, wonDeals: 0, lostDeals: 0 });
-    });
-    leads.forEach(l => {
-      const k = phoneKey(l.phoneNumber);
-      let st = stats.get(k);
-      if (!st) { st = { totalLeads: 0, wonDeals: 0, lostDeals: 0 }; stats.set(k, st); }
-      st.totalLeads++;
-      if (l.status === 'Won') st.wonDeals++;
-      if (l.status === 'Lost') st.lostDeals++;
-    });
-    return stats;
-  }, [contacts, leads]);
 
   // Dynamic parent-child city options based on country
   const newContactCityOptions = useMemo(() => {
@@ -901,30 +956,8 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
 
   const contactLeads = useMemo(() => {
     if (!selectedContact) return [];
-    const k = phoneKey(selectedContact.phoneNumber);
-    return k ? leads.filter(l => phoneKey(l.phoneNumber) === k) : [];
-  }, [selectedContact, leads]);
-
-  const contactComments = useMemo(() => {
-    if (!selectedContact) return [];
-    const notes: { id: string; date: string; time?: string; user: string; comment: string; leadId: string; project: string }[] = [];
-    contactLeads.forEach(l => {
-      if (l.comments) {
-        l.comments.forEach(c => {
-          notes.push({
-            ...c,
-            leadId: l.id,
-            project: l.project
-          });
-        });
-      }
-    });
-    return notes.sort((a, b) => {
-      const dateA = a.date + (a.time ? 'T' + a.time : '');
-      const dateB = b.date + (b.time ? 'T' + b.time : '');
-      return dateB.localeCompare(dateA);
-    });
-  }, [contactLeads, selectedContact]);
+    return leadsByPhone.get(phoneKey(selectedContact.phoneNumber)) || [];
+  }, [selectedContact, leadsByPhone]);
 
   return (
     <div className="space-y-6" id="crm-contacts-root">
@@ -935,55 +968,82 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
         </div>
       )}
       
-      {/* Header and Add button */}
+      {selectedContact ? (
+        <Customer360
+          contact={selectedContact}
+          leads={contactLeads}
+          companies={crmService.getCompanies()}
+          onBack={() => setSelectedContact(null)}
+          onEdit={currentRole !== 'Read Only' ? () => { setFormError(''); handleOpenEditModal(); } : undefined}
+          onDelete={isAdmin ? () => handleDeleteContact(selectedContact.id) : undefined}
+          setActiveSubTab={setActiveSubTab}
+        />
+      ) : (
+      <>
+      {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
-          <h3 className="text-xl font-bold text-brand-black flex items-center gap-2">
-            <span>Corporate Contacts directory</span>
+          <h3 className="text-xl font-black text-brand-black flex items-center gap-2.5">
+            <Users size={20} className="text-brand-red" />
+            <span>Contacts</span>
             <span className="text-xs bg-brand-red/10 text-brand-red font-bold px-2.5 py-0.5 rounded-full">
-              {filteredContacts.length} Contacts
+              {filteredContacts.length.toLocaleString('en-US')}{filteredContacts.length !== contacts.length ? ` of ${contacts.length.toLocaleString('en-US')}` : ''}
             </span>
           </h3>
-          <p className="text-xs text-brand-gray/80 mt-1">Unique contacts are linked automatically to Sales Inquiries using normalized mobile numbers.</p>
+          <p className="text-xs text-brand-gray mt-1">Click a customer to open the full Customer 360 view. Contacts are linked to leads by mobile number.</p>
         </div>
-        
         <div className="flex items-center gap-2">
-          <ColumnSelector 
-            columns={columnsList}
-            visibleColumns={visibleColumns}
-            onChange={setVisibleColumns}
-          />
+          <ColumnSelector columns={columnsList} visibleColumns={visibleColumns} onChange={setVisibleColumns} />
           {isAdmin && (
-            <button
-              onClick={exportToCSV}
-              className="bg-white hover:bg-brand-gray/5 border border-brand-gray/25 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow transition-all"
-            >
-              <Download size={14} />
-              <span>Export</span>
+            <button onClick={exportToCSV} className="bg-white hover:bg-brand-gray/5 border border-brand-gray/25 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all">
+              <Download size={14} /><span>Export</span>
             </button>
           )}
           {currentRole !== 'Read Only' && (
-            <button
-              onClick={() => { setFormError(''); setShowCreateModal(true); }}
-              className="bg-brand-red hover:bg-brand-red-dark text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow"
-            >
-              <Plus size={14} />
-              <span>New Contact</span>
+            <button onClick={() => { setFormError(''); setShowCreateModal(true); }} className="bg-brand-red hover:bg-brand-red-dark text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow">
+              <Plus size={14} /><span>New Contact</span>
             </button>
           )}
         </div>
       </div>
 
-      {/* Search Input */}
-      <div className="relative">
-        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-gray" size={16} />
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="Search contacts (by name, mobile number, email, company, industry...)"
-          className="w-full pl-10 pr-4 py-3 bg-white border border-brand-gray/20 rounded-2xl focus:outline-none focus:ring-1 focus:ring-brand-red shadow-sm text-xs font-semibold"
-        />
+      {/* Search + filters */}
+      <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-3 space-y-3">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-gray" size={16} />
+          <input type="text" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search by name, phone, email, company or Customer ID"
+            className="w-full pl-10 pr-4 py-2.5 bg-brand-gray/5 border border-brand-gray/15 rounded-xl focus:outline-none focus:ring-1 focus:ring-brand-red text-xs font-semibold" />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <select value={fCompany} onChange={(e) => setFCompany(e.target.value)} className="bg-white border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-black focus:outline-none focus:ring-1 focus:ring-brand-red">
+            <option value="">All companies</option>
+            {filterOptions.companies.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <select value={fLeads} onChange={(e) => setFLeads(e.target.value as '' | 'open' | 'won' | 'none')} className="bg-white border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-black focus:outline-none focus:ring-1 focus:ring-brand-red">
+            <option value="">All customers</option>
+            <option value="open">With open leads</option>
+            <option value="won">Won customers</option>
+            <option value="none">No leads yet</option>
+          </select>
+          <select value={fOwner} onChange={(e) => setFOwner(e.target.value)} className="bg-white border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-black focus:outline-none focus:ring-1 focus:ring-brand-red">
+            <option value="">All salespeople</option>
+            {filterOptions.owners.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <select value={fChannel} onChange={(e) => setFChannel(e.target.value)} className="bg-white border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-black focus:outline-none focus:ring-1 focus:ring-brand-red">
+            <option value="">All channels</option>
+            {CHANNELS.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+          {filterOptions.cities.length > 0 && (
+            <select value={fCity} onChange={(e) => setFCity(e.target.value)} className="bg-white border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-black focus:outline-none focus:ring-1 focus:ring-brand-red">
+              <option value="">All cities</option>
+              {filterOptions.cities.map(x => <option key={x} value={x}>{x}</option>)}
+            </select>
+          )}
+          {anyFilter && (
+            <button onClick={() => { setSearchTerm(''); setFCompany(''); setFCity(''); setFOwner(''); setFChannel(''); setFLeads(''); }} className="text-xs font-bold text-brand-red hover:underline flex items-center gap-1"><X size={12} /> Clear</button>
+          )}
+        </div>
       </div>
 
       {/* Bulk Action Controls Bar */}
@@ -1021,271 +1081,74 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
         </div>
       )}
 
-      {/* Main Table and Side panel Layout */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        
-        {/* Table list */}
-        <div className="xl:col-span-2 bg-white rounded-2xl border border-brand-gray/20 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-brand-gray/5 border-b border-brand-gray/15 text-brand-gray text-[10px] font-bold uppercase tracking-wider">
-                  <th className="py-4 px-4 w-10">
-                    <button onClick={handleSelectAll} className="focus:outline-none">
-                      {selectedContactIds.length === filteredContacts.length && filteredContacts.length > 0 ? (
-                        <CheckSquare size={16} className="text-brand-red" />
-                      ) : (
-                        <Square size={16} />
-                      )}
-                    </button>
-                  </th>
-                  <th className="py-4 px-4">Contact Name</th>
-                  <th className="py-4 px-3">Unique Phone Key</th>
-                  <th className="py-4 px-3">Associated Company</th>
-                  <th className="py-4 px-3 text-center">Pipelines</th>
-                  <th className="py-4 px-3 text-center">Won / Lost</th>
-                  <th className="py-4 px-4 text-right">View</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-brand-gray/10 text-xs font-medium text-brand-black">
-                {filteredContacts.length > 0 ? (
-                  pageRows.map((c) => (
+      {/* Table */}
+      <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr className="bg-brand-gray/5 border-b border-brand-gray/15 text-brand-gray text-[10px]">
+                <th className="py-3.5 px-4 w-10">
+                  <button onClick={handleSelectAll} className="focus:outline-none" aria-label="Select all">
+                    {selectedContactIds.length === filteredContacts.length && filteredContacts.length > 0 ? <CheckSquare size={16} className="text-brand-red" /> : <Square size={16} />}
+                  </button>
+                </th>
+{columns.id && (<>
+                  <th className="py-3.5 px-3 text-left"><button onClick={() => toggleSort('serial')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Customer ID{sortKey === 'serial' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.name && (<>
+                  <th className="py-3.5 px-3 text-left"><button onClick={() => toggleSort('name')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Name{sortKey === 'name' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.company && (<>
+                  <th className="py-3.5 px-3 text-left"><button onClick={() => toggleSort('company')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Company{sortKey === 'company' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.phone && (<>
+                  <th className="py-3.5 px-3 text-left"><button onClick={() => toggleSort('phone')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Phone{sortKey === 'phone' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.email && <th className="py-3.5 px-3 uppercase tracking-wider font-bold">Email</th>}
+{columns.leads && (<>
+                  <th className="py-3.5 px-3 text-center"><button onClick={() => toggleSort('leads')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Leads{sortKey === 'leads' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.open && (<>
+                  <th className="py-3.5 px-3 text-center"><button onClick={() => toggleSort('open')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Open{sortKey === 'open' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.won && (<>
+                  <th className="py-3.5 px-3 text-right"><button onClick={() => toggleSort('won')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Won value{sortKey === 'won' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.last && (<>
+                  <th className="py-3.5 px-3 text-left"><button onClick={() => toggleSort('last')} className="inline-flex items-center gap-1 uppercase tracking-wider font-bold hover:text-brand-black">Last activity{sortKey === 'last' && (sortDir === 'asc' ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}</button></th>
+</>)}
+{columns.channels && <th className="py-3.5 px-3 uppercase tracking-wider font-bold">Channels</th>}
+                <th className="py-3.5 px-3 text-right uppercase tracking-wider font-bold">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-brand-gray/10 font-medium text-brand-black">
+              {filteredContacts.length > 0 ? (
+                pageRows.map((c) => {
+                  const k = phoneKey(c.phoneNumber);
+                  return (
                     <ContactRow
                       key={c.id}
                       c={c}
-                      stats={contactStats.get(phoneKey(c.phoneNumber)) || NO_STAT}
+                      agg={aggMap.get(k) || EMPTY_AGG}
+                      latestLeadId={latestLead.get(k)}
+                      cols={columns}
                       isSelected={selectedSet.has(c.id)}
                       onToggle={handleSelectContact}
                       onOpen={setSelectedContact}
+                      onLead={openLead}
                     />
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={7} className="py-8 text-center text-brand-gray">
-                      No corporate contacts matched search query.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <PagerBar total={filteredContacts.length} page={page} pageSize={pageSize} onPage={setPage} onSize={setPageSize} shown={allShown} onMore={more} />
+                  );
+                })
+              ) : (
+                <tr><td colSpan={colCount} className="py-10 text-center text-brand-gray">No contacts match the current search and filters.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
-
-        {/* Selected Contact details card */}
-        <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-6 flex flex-col h-full justify-between">
-          {selectedContact ? (
-            <div className="space-y-6 text-xs">
-              
-              {/* Header profile */}
-              <div className="flex items-center justify-between border-b border-brand-gray/10 pb-4">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-full bg-brand-red text-white flex items-center justify-center font-black text-xl">
-                    {selectedContact.name.charAt(0)}
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-brand-black text-sm flex items-center gap-1.5">
-                      <span>{selectedContact.name}</span>
-                      <span className="font-mono text-[9px] text-brand-red bg-brand-red/10 px-1.5 py-0.5 rounded font-bold">{selectedContact.serialNumber || 'N/A'}</span>
-                    </h4>
-                    <p className="text-[10px] uppercase font-bold text-brand-gray tracking-wider mt-0.5">{selectedContact.jobTitle || 'Customer'}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {isAdmin && (
-                    <button
-                      onClick={() => handleDeleteContact(selectedContact.id)}
-                      className="bg-rose-100 hover:bg-rose-200 text-rose-700 px-3 py-1.5 rounded-xl flex items-center gap-1 font-bold text-[10px] uppercase tracking-wider"
-                      title="Delete Contact"
-                    >
-                      <Trash2 size={12} />
-                      <span>Delete</span>
-                    </button>
-                  )}
-                  {currentRole !== 'Read Only' && (
-                    <button
-                      onClick={() => { setFormError(''); handleOpenEditModal(); }}
-                      className="bg-brand-red/10 hover:bg-brand-red/20 text-brand-red px-3 py-1.5 rounded-xl flex items-center gap-1 font-bold text-[10px] uppercase tracking-wider"
-                      title="Edit Contact Specifications"
-                    >
-                      <Edit size={12} />
-                      <span>Edit</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Details grid */}
-              <div className="space-y-3">
-                <h5 className="text-[10px] uppercase font-bold text-brand-gray tracking-widest border-b border-brand-gray/5 pb-1">Profile Specifications</h5>
-                
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Mobile Number:</span>
-                  <span className="font-mono text-brand-black font-bold">{selectedContact.phoneNumber}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Email:</span>
-                  <span className="text-brand-black font-semibold">{selectedContact.email || 'N/A'}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Company:</span>
-                  {selectedContact.company ? (
-                    <button
-                      onClick={() => {
-                        const targetCo = crmService.getCompanies().find(
-                          co => (co.name || '').toLowerCase() === (selectedContact.company || '').toLowerCase()
-                        );
-                        if (targetCo) {
-                          localStorage.setItem('selected_crm_company_name', targetCo.name);
-                        } else {
-                          localStorage.setItem('selected_crm_company_name', selectedContact.company);
-                        }
-                        setActiveSubTab?.('companies');
-                      }}
-                      className="text-brand-red font-bold hover:underline text-left text-xs"
-                    >
-                      {selectedContact.company}
-                    </button>
-                  ) : (
-                    <span className="text-brand-gray">Private Person</span>
-                  )}
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Department:</span>
-                  <span className="text-brand-black font-bold">{selectedContact.department || 'N/A'}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Industry Focus:</span>
-                  <span className="text-brand-black font-semibold">{selectedContact.industry || 'N/A'}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">City:</span>
-                  <span className="text-brand-black font-semibold">{[selectedContact.city, selectedContact.country].filter(Boolean).join(', ') || 'N/A'}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Nationality:</span>
-                  <span className="text-brand-black font-semibold">{selectedContact.nationality || 'N/A'}</span>
-                </div>
-
-                <div className="flex justify-between items-center">
-                  <span className="text-brand-gray font-semibold">Language preference:</span>
-                  <span className="text-brand-black font-bold bg-brand-gray/10 px-2 py-0.5 rounded text-[10px] flex items-center gap-1">
-                    <Languages size={10} />
-                    {selectedContact.preferredLanguage}
-                  </span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Inbound Channel:</span>
-                  <span className="text-brand-black font-bold">{selectedContact.preferredCommunication}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span className="text-brand-gray font-semibold">Record Registered:</span>
-                  <span className="text-brand-gray font-mono">{selectedContact.createdDate}</span>
-                </div>
-              </div>
-
-              {/* Connected Lead inquiries */}
-              <div className="space-y-3">
-                <h5 className="text-[10px] uppercase font-bold text-brand-gray tracking-widest border-b border-brand-gray/5 pb-1">Associated Lead inquiries ({contactLeads.length})</h5>
-                
-                <div className="space-y-2 max-h-32 overflow-y-auto pr-1">
-                  {contactLeads.map(l => {
-                    let sColor = 'bg-brand-gray/10 text-brand-gray';
-                    if (l.status === 'Won') sColor = 'bg-emerald-100 text-emerald-800';
-                    else if (l.status === 'Lost') sColor = 'bg-rose-100 text-rose-800';
-                    else if (l.status === 'New') sColor = 'bg-yellow-100 text-yellow-800';
-
-                    const handleOpenLead = () => {
-                      localStorage.setItem('selected_lead_id', l.id);
-                      if (setActiveSubTab) {
-                        setActiveSubTab('leads');
-                      }
-                    };
-
-                    return (
-                      <div key={l.id} className="p-2.5 bg-brand-gray/5 border border-brand-gray/15 rounded-xl flex justify-between items-center">
-                        <div>
-                          <button 
-                            onClick={handleOpenLead}
-                            className="font-mono font-bold text-brand-red hover:underline hover:text-brand-red-dark text-left"
-                            title="Click to open this Sales Lead"
-                          >
-                            {l.id}
-                          </button>
-                          <span className="text-brand-gray ml-2 text-[10px]">{l.project}</span>
-                        </div>
-                        <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${sColor}`}>{l.status}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Inquiry Notes & Activities */}
-              <div className="space-y-3 border-t border-brand-gray/10 pt-4">
-                <h5 className="text-[10px] uppercase font-bold text-brand-gray tracking-widest border-b border-brand-gray/5 pb-1">Inquiry Notes & Activity Logs</h5>
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {contactComments.length > 0 ? (
-                    contactComments.map((c, cIdx) => (
-                      <div key={`${c.id}-${cIdx}`} className="p-3 bg-brand-gray/5 border border-brand-gray/15 rounded-xl space-y-1">
-                        <div className="flex justify-between text-[10px] font-semibold text-brand-gray">
-                          <span>{c.user} ({c.project})</span>
-                          <span>{c.date} {c.time || ''}</span>
-                        </div>
-                        <p className="text-brand-black text-xs whitespace-pre-line leading-relaxed">{c.comment}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-center py-4 text-brand-gray text-[11px]">No notes added to associated inquiries yet.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Profile Change Log Section */}
-              <div className="space-y-3 border-t border-brand-gray/10 pt-4">
-                <h5 className="text-[10px] uppercase font-bold text-brand-gray tracking-widest border-b border-brand-gray/5 pb-1 flex items-center gap-1">
-                  <History size={12} className="text-brand-red" />
-                  <span>Contact Field Change Logs ({selectedContact.editLogs?.length || 0})</span>
-                </h5>
-                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                  {selectedContact.editLogs && selectedContact.editLogs.length > 0 ? (
-                    selectedContact.editLogs.map((log, logIdx) => (
-                      <div key={`${log.id}-${logIdx}`} className="p-2.5 bg-brand-gray/5 border border-brand-gray/15 rounded-xl space-y-1">
-                        <div className="flex justify-between text-[10px] font-semibold text-brand-gray">
-                          <span className="font-bold text-brand-black">{log.user}</span>
-                          <span>{new Date(log.timestamp).toLocaleString()}</span>
-                        </div>
-                        <div className="text-[11px] leading-relaxed text-brand-black">
-                          Edited <strong className="text-brand-red">{log.field}</strong> from <span className="font-mono bg-brand-gray/10 px-1 rounded">"{log.from}"</span> to <span className="font-mono bg-brand-gray/10 px-1 rounded">"{log.to}"</span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-center py-4 text-brand-gray text-[11px]">No profile field edits have been logged yet.</p>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          ) : (
-            <div className="h-48 flex items-center justify-center text-center text-brand-gray text-xs">
-              <div className="space-y-2">
-                <Users size={24} className="mx-auto text-brand-gray/40" />
-                <p>Select a corporate contact to display profiles, associated company structures, and active sales pipelines.</p>
-              </div>
-            </div>
-          )}
-        </div>
-
+        <PagerBar total={filteredContacts.length} page={page} pageSize={pageSize} onPage={setPage} onSize={setPageSize} shown={allShown} onMore={more} />
       </div>
+      </>
+      )}
 
       {/* -------------------- NEW CONTACT MODAL -------------------- */}
       {showCreateModal && (

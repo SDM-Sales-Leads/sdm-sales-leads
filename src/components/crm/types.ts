@@ -67,6 +67,7 @@ export interface Lead {
   id: string; // SL-XXXX
   date: string;
   source: string;
+  channel?: string;              // marketing channel: Mobile App / Call Center / Facebook Leads / Walk-in (source = the finer origin, e.g. Billboard)
   project: string;
   customerName: string;
   phoneNumber: string; // Normalized

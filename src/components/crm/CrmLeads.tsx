@@ -4,12 +4,13 @@ import { CrmPlotRecommendations } from './CrmPlotRecommendations';
 import { ColumnSelector } from './ColumnSelector';
 import { crmService, normalizePhone } from './crmService';
 import {
-  INDUSTRIES, LOST_CATEGORIES, LOST_REASONS_TEAM, PRIORITIES, SOURCES, STATUS_GROUPS, LEGACY_STATUSES, isOpenStatus, leadScore, normSource, phoneIntl, statusStage,
+  INDUSTRIES, NO_CHANNEL, channelOf, LOST_CATEGORIES, LOST_REASONS_TEAM, PRIORITIES, SOURCES, STATUS_GROUPS, LEGACY_STATUSES, isOpenStatus, leadScore, normSource, phoneIntl, statusStage,
 } from './leadConfig';
 import { KanbanKey, LeadAuth, addDaysISO, withSideEffects, kanbanBucket, neglectInfo, prioKey, priorityClass, statusClass, todayISO } from './leadRules';
 import { fmtSize, formatLeadDateTime, getSlaStatus, isSlaAtRisk, localISO } from './leadView';
 import { KanbanCard, LeadRow, PAGE_SIZES, PageSize, PagerBar, ALL_CHUNK } from './LeadListParts';
 import { LeadEditor, NATIONALITIES } from './LeadEditor';
+import { ChipBar, EMPTY_XF, XF, XFilterPanel, makeXfPredicate, xfChips, xfCount } from './LeadFilters';
 import { LeadAuditHistory } from './LeadAuditHistory';
 import { LeadScoreChip, sourceWinRates } from './LeadScoreChip';
 import { WA_LANGS, WaLang, WA_TEMPLATES, getWaLang, setWaLang, suggestTemplate, waCompose, waFill } from './waTemplates';
@@ -241,10 +242,11 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   const [filterSource, setFilterSource] = useState<string>('All');
   const [filterSalesperson, setFilterSalesperson] = useState<string>('All');
   const [showFilters, setShowFilters] = useState(false);
+  const [xf, setXf] = useState<XF>(EMPTY_XF);
   const [savedView, setSavedView] = useState<string>('All');
 
   // Column management
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(['id', 'date', 'customer', 'project', 'size', 'slaStatus', 'priority', 'score', 'status', 'assigned']);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(['id', 'date', 'customer', 'project', 'size', 'slaStatus', 'priority', 'score', 'status', 'assigned', 'channel', 'leadSource']);
   
   const columns = {
     id: visibleColumns.includes('id'),
@@ -257,6 +259,9 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     score: visibleColumns.includes('score'),
     status: visibleColumns.includes('status'),
     assigned: visibleColumns.includes('assigned'),
+    channel: visibleColumns.includes('channel'),
+    leadSource: visibleColumns.includes('leadSource'),
+    customerId: visibleColumns.includes('customerId'),
   };
 
   const columnsList = [
@@ -270,6 +275,9 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     { key: 'score', label: 'Lead score' },
     { key: 'status', label: 'Status' },
     { key: 'assigned', label: 'Assigned' },
+    { key: 'channel', label: 'Channel' },
+    { key: 'leadSource', label: 'Lead Source' },
+    { key: 'customerId', label: 'Customer ID' },
   ];
 
   // Modals state
@@ -413,6 +421,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     setFilterSource('All');
     setFilterSalesperson('All');
     clearSearch();
+    setXf(EMPTY_XF);
     setSavedView('All');
   };
 
@@ -462,6 +471,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     const q = searchTerm.trim().toLowerCase();
     const qDigits = q.replace(/\D/g, '');
     const qPhone = qDigits.length >= 5 ? normalizePhone(qDigits) : '';
+    const xfPred = makeXfPredicate(xf, (l) => leadScore(l, winRates.get(String(l.source || '')) || 0));
     const viewSla = savedView === 'SLA Violated' || savedView === 'SLA Within Limit' || savedView === 'SLA At Risk';
 
     const out = leads.filter(l => {
@@ -480,6 +490,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
       if (filterSource !== 'All' && l.source !== filterSource) return false;
       if (filterSalesperson === 'Unassigned') { if (l.assignedSalespersonId) return false; }
       else if (filterSalesperson !== 'All' && l.assignedSalespersonName !== filterSalesperson) return false;
+      if (xfPred && !xfPred(l)) return false;
       if (q) {
         const e = searchOf(l);
         // phone search also works across formats (+20 / 0020 / 01x)
@@ -515,15 +526,46 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     });
     return keyed.map((x) => x.l);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, salespeople, leads, searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, sortField, sortDirection]);
+  }, [user, salespeople, leads, searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, winRates, sortField, sortDirection]);
 
   // back to the first page whenever the result set changes shape
-  useEffect(() => { setPage(0); setKanbanCap({}); setCalDay(null); }, [searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, sortField, sortDirection]);
+  useEffect(() => { setPage(0); setKanbanCap({}); setCalDay(null); }, [searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, sortField, sortDirection]);
 
   // Project List
   const projects = useMemo(() => {
     return Array.from(new Set(leads.map(l => l.project).filter(Boolean))).sort();
   }, [leads]);
+
+  // option lists for the extra filters come only from the rows this user can see
+  const xfOptions = useMemo(() => {
+    const ch = new Set<string>(), ind = new Set<string>(), nat = new Set<string>();
+    for (const l of leads) { ch.add(channelOf(l)); if (l.industry) ind.add(l.industry); if (l.nationality) nat.add(l.nationality); }
+    return { channels: Array.from(ch).sort(), industries: Array.from(ind).sort(), nationalities: Array.from(nat).sort() };
+  }, [leads]);
+
+  // customer id per lead = the contact that holds the lead's phone (contacts are created per phone); built once per refresh
+  const contactByPhone = useMemo(() => {
+    const m = new Map<string, Contact>();
+    for (const c of crmService.getContacts()) { const k = normalizePhone(c.phoneNumber || ''); if (k && !m.has(k)) m.set(k, c); }
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leads]);
+  const contactOf = (l: Lead) => contactByPhone.get(normalizePhone(l.phoneNumber || ''));
+  const openContact = (c: Contact) => {
+    try { localStorage.setItem('selected_contact_id', c.id); } catch { /* ignore */ }
+    setActiveSubTab('contacts');
+  };
+
+  const activeChips = useMemo(() => {
+    const out: { key: string; label: string; onClear: () => void }[] = [];
+    if (filterStatus !== 'All') out.push({ key: 'status', label: `Status: ${filterStatus === 'OpenLeads' ? 'Open leads' : filterStatus}`, onClear: () => setFilterStatus('All') });
+    if (filterProject !== 'All') out.push({ key: 'project', label: `Project: ${filterProject}`, onClear: () => setFilterProject('All') });
+    if (filterPriority !== 'All') out.push({ key: 'priority', label: `Priority: ${filterPriority}`, onClear: () => setFilterPriority('All') });
+    if (filterSource !== 'All') out.push({ key: 'source', label: `Source: ${filterSource}`, onClear: () => setFilterSource('All') });
+    if (filterSalesperson !== 'All') out.push({ key: 'owner', label: `Owner: ${filterSalesperson === 'Unassigned' ? 'Unassigned' : filterSalesperson}`, onClear: () => setFilterSalesperson('All') });
+    for (const c of xfChips(xf)) out.push({ key: c.key, label: c.label, onClear: () => setXf((x) => c.clear(x)) });
+    return out;
+  }, [filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, xf]);
 
   // Sources list
   const sources = useMemo(() => {
@@ -1554,7 +1596,7 @@ ${user.name || ''}`);
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border transition-all ${showFilters ? 'bg-brand-black text-white border-brand-black' : 'bg-white text-brand-gray border-brand-gray/25 hover:bg-brand-gray/5'}`}
           >
             <Filter size={14} />
-            <span>Filters</span>
+            <span>Filters{activeChips.length > 0 ? ` (${activeChips.length})` : ''}</span>
           </button>
 
           <ColumnSelector 
@@ -1605,6 +1647,8 @@ ${user.name || ''}`);
           )}
         </div>
       </div>
+
+      {activeChips.length > 0 && <ChipBar chips={activeChips} onClearAll={resetFilters} />}
 
       {/* Advanced Filters Panel */}
       <AnimatePresence>
@@ -1663,13 +1707,13 @@ ${user.name || ''}`);
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Source Channel</label>
+                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Lead Source</label>
                 <select
                   value={filterSource}
                   onChange={(e) => setFilterSource(e.target.value)}
                   className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-medium focus:outline-none"
                 >
-                  <option value="All">All Sources</option>
+                  <option value="All">All Lead Sources</option>
                   {sources.map(s => (
                     <option key={s} value={s}>{s}</option>
                   ))}
@@ -1690,6 +1734,10 @@ ${user.name || ''}`);
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-brand-gray/10">
+              <XFilterPanel xf={xf} setXf={setXf} channels={xfOptions.channels} industries={xfOptions.industries} nationalities={xfOptions.nationalities} />
             </div>
 
             <div className="flex justify-between items-center mt-4 pt-4 border-t border-brand-gray/10">
@@ -1786,6 +1834,9 @@ ${user.name || ''}`);
                   {columns.score && <th className="py-4 px-3">Score</th>}
                   {columns.status && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('status')}>Funnel Status</th>}
                   {columns.assigned && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('assignedSalespersonName')}>Assigned Agent</th>}
+                  {columns.channel && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('channel')}>Channel</th>}
+                  {columns.leadSource && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('source')}>Lead Source</th>}
+                  {columns.customerId && <th className="py-4 px-3">Customer ID</th>}
                   <th className="py-4 px-4 text-right w-20">Actions</th>
                 </tr>
               </thead>
@@ -1800,6 +1851,8 @@ ${user.name || ''}`);
                       tick={tick}
                       canAssign={canRoute}
                       winRate={winRates.get(String(l.source || '')) || 0}
+                      contact={columns.customerId ? contactOf(l) : undefined}
+                      onContact={openContact}
                       onSelect={handleSelectLead}
                       onOpen={setSelectedLead}
                       onAssign={openAssignFor}
@@ -1807,7 +1860,7 @@ ${user.name || ''}`);
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={12} className="py-8 text-center text-brand-gray text-xs">
+                    <td colSpan={16} className="py-8 text-center text-brand-gray text-xs">
                       No matching leads in active database queue. Apply filters or register inbound leads.
                     </td>
                   </tr>
@@ -2502,9 +2555,19 @@ ${user.name || ''}`);
                   </span>
                 </div>
                 <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Inquiry Channel Source</span>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Channel</span>
+                  <span className="text-brand-black text-xs font-semibold">{channelOf(selectedLead) === NO_CHANNEL ? '—' : channelOf(selectedLead)}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer ID</span>
+                  {(() => { const c = contactOf(selectedLead); return c ? (
+                    <button onClick={() => openContact(c)} className="font-mono text-xs font-bold text-brand-red hover:underline" title="Open this customer in Contacts">{c.serialNumber || c.id}</button>
+                  ) : <span className="text-brand-black text-xs">—</span>; })()}
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Lead Source</span>
                   <div className="flex flex-col gap-1">
-                    <span className="text-brand-black text-xs font-semibold">{selectedLead.source}</span>
+                    <span className="text-brand-black text-xs font-semibold">{selectedLead.source || '—'}</span>
                     {selectedLead.emailId && (
                       <button
                         onClick={() => handleViewInboundEmail(selectedLead)}
@@ -2535,7 +2598,7 @@ ${user.name || ''}`);
               {/* Description Comments */}
               <div>
                 <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block mb-2">Original Inquiry Comments</span>
-                <p className="bg-brand-gray/5 border border-brand-gray/15 p-3.5 rounded-xl text-brand-black leading-relaxed">
+                <p dir="auto" className="bg-brand-gray/5 border border-brand-gray/15 p-3.5 rounded-xl text-brand-black leading-relaxed whitespace-pre-wrap break-words">
                   {selectedLead.description || 'No original descriptions loaded.'}
                 </p>
               </div>

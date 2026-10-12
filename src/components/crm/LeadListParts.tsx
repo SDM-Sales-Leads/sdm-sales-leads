@@ -2,8 +2,8 @@
 // visible columns change (rows keep the same lead object between refreshes, see crmService.loadAll / pullDelta).
 import React from 'react';
 import { AlertTriangle, CheckSquare, ChevronLeft, ChevronRight, Clock, Info, Square, UserCheck, UserPlus } from 'lucide-react';
-import type { Lead } from './types';
-import { phoneIntl } from './leadConfig';
+import type { Contact, Lead } from './types';
+import { NO_CHANNEL, channelOf, phoneIntl } from './leadConfig';
 import { fmtSize, formatLeadDateTime, getSlaStatus } from './leadView';
 import { priorityClass, prioKey, statusClass } from './leadRules';
 import { LeadScoreChip } from './LeadScoreChip';
@@ -21,9 +21,11 @@ interface RowProps {
   onSelect: (id: string) => void;
   onOpen: (l: Lead) => void;
   onAssign: (l: Lead) => void;
+  contact?: Contact;      // customer record of this lead (only passed when the Customer ID column is shown)
+  onContact?: (c: Contact) => void;
 }
 
-export const LeadRow = React.memo(({ lead: l, selected, cols, canAssign, winRate, onSelect, onOpen, onAssign }: RowProps) => {
+export const LeadRow = React.memo(({ lead: l, selected, cols, canAssign, winRate, onSelect, onOpen, onAssign, contact, onContact }: RowProps) => {
   const has = (k: string) => cols.includes(k);
   const sla = l.slaDeadline ? getSlaStatus(l) : null;
   return (
@@ -80,6 +82,15 @@ export const LeadRow = React.memo(({ lead: l, selected, cols, canAssign, winRate
               <AlertTriangle size={10} /><span>UNROUTED QUEUE</span>
             </span>
           )}
+        </td>
+      )}
+      {has('channel') && <td className="py-3.5 px-3 text-brand-gray whitespace-nowrap">{channelOf(l) === NO_CHANNEL ? '—' : channelOf(l)}</td>}
+      {has('leadSource') && <td className="py-3.5 px-3 text-brand-gray whitespace-nowrap">{l.source || '—'}</td>}
+      {has('customerId') && (
+        <td className="py-3.5 px-3 whitespace-nowrap">
+          {contact && onContact
+            ? <button onClick={() => onContact(contact)} className="font-mono font-bold text-brand-red hover:underline" title="Open customer in Contacts">{contact.serialNumber || contact.id}</button>
+            : <span className="text-brand-gray/60">—</span>}
         </td>
       )}
       <td className="py-3.5 px-4 text-right">

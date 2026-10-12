@@ -12,7 +12,7 @@ import { route } from "./router.ts";
 import { sanitizeLead } from "./leadrules.ts";
 import { getBody, htmlToText, listFolder, loadEws } from "./ews.ts";
 import {
-  chooseAgent, DEFAULT_QUEUE, ensureContactAndCompany, ensureContactsAndCompaniesBulk, ingestInbox, leadColumns, loadQueue, nextId, parseMail,
+  channelFromMail, chooseAgent, cleanDescription, DEFAULT_QUEUE, ensureContactAndCompany, ensureContactsAndCompaniesBulk, ingestInbox, leadColumns, loadQueue, nextId, parseMail,
 } from "./ingest.ts";
 
 const ID_RE = /^[A-Za-z0-9_.:-]{1,60}$/;
@@ -363,11 +363,33 @@ route("POST", "/crm/reparse-lead", async ({ req, c }) => {
 async function runIngest(c: Caller) {
   if (!(can(c, "canViewSalesMail") || crmScope(c) === "all")) throw forbidden();
   await rateLimit(`ingest:${c.id}`, 3600, 30);
-  const r = await ingestInbox(8, c.name);
+  const r = await ingestInbox(25, c.name);
   await logActivity(c, "Mail Ingestion", `${r.newLeadsCount} new lead(s) from ${r.processed} mail(s)`, "system");
   return { success: true, messages: [], ...r };
 }
 route("POST", "/crm/trigger-auto-sync", async ({ c }) => { needCrm(c); return await runIngest(c); });
+// one-time tidy-up of leads that came from e-mail: remove the signature / disclaimer from the description and set the channel
+route("POST", "/crm/fix-mail-leads", async ({ c }) => {
+  needCrm(c);
+  if (crmScope(c) !== "all") throw forbidden();
+  const rows = await pageAll((a, b) => admin.from("crm_leads").select("id,data,email_id").not("email_id", "is", null).is("deleted_at", null).order("id").range(a, b), 20000);
+  const ids = rows.map((r: any) => r.email_id).filter(Boolean);
+  const logs = new Map<string, any>();
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data } = await admin.from("crm_email_logs").select("id,sender,subject").in("id", ids.slice(i, i + 200));
+    (data || []).forEach((l: any) => logs.set(l.id, l));
+  }
+  let fixed = 0;
+  for (const r of rows as any[]) {
+    const d = { ...r.data }; let ch = false;
+    const clean = cleanDescription(String(d.description || ""));
+    if (clean !== (d.description || "")) { d.description = clean; ch = true; }
+    if (!d.channel) { const lg = logs.get(r.email_id); const chn = channelFromMail({ sender: lg?.sender, subject: lg?.subject }); if (chn) { d.channel = chn; ch = true; } }
+    if (d.source === "Email") { d.source = ""; ch = true; }
+    if (ch) { await admin.from("crm_leads").update({ data: d }).eq("id", r.id); fixed++; }
+  }
+  return { success: true, checked: rows.length, fixed };
+});
 route("POST", "/crm/sync-inbox", async ({ c }) => { needCrm(c); return await runIngest(c); });
 
 // shared mailbox view (inbox + sent) — only for people who may use CRM mail

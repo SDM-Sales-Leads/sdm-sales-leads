@@ -18,6 +18,7 @@ export function buildOldNav(p: any): OldNavItem[] {
     { id: 'leads', tab: 'sales-crm', sub: 'leads', icon: '☰', label: manage ? 'Leads' : 'My Leads', show: !!p?.canViewSalesLeads },
     { id: 'finance', tab: 'sales-crm', sub: 'finance', icon: '✓', label: 'Won Deals', show: fin },
     { id: 'reports', tab: 'sales-crm', sub: 'reports', icon: '▤', label: fin && !manage ? 'Revenue Reports' : 'Team Reports', show: !!p?.canViewSalesReports },
+    { id: 'team-perf', tab: 'sales-crm', sub: 'team-performance', icon: '👥', label: 'Team Performance', show: !!p?.canViewSalesReports },
     { id: 'calendar', tab: 'sales-crm', sub: 'calendar', icon: '▦', label: 'Calendar', show: crm },
     { id: 'achievements', tab: 'sales-crm', sub: 'achievements', icon: '🏅', label: 'Achievements', show: crm && !manage },
     { id: 'guide', tab: 'sales-crm', sub: 'guide', icon: '🎓', label: 'How to use', show: crm },

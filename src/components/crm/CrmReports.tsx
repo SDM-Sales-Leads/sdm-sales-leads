@@ -1,39 +1,32 @@
-import React, { useMemo, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { Lead } from './types';
-import { Printer, Download } from 'lucide-react';
+import { Printer } from 'lucide-react';
+import { crmService } from './crmService';
+import { ExportBar } from './ReportParts';
+import { ChannelsTab, DemandTab, ForecastTab, FunnelAgingTab, ReportCtx, ServiceTab, TrendTab, WinLossTab } from './CrmReportsExtra';
+import { activityIndex, convOf, decidedWinOf, firstActionMs, slaResult, tallyAdd, emptyTally } from './reportsEngine';
 import { useAuth } from '../../services/AuthContext';
 import {
   Analysis, Agg, Breakdown, DEFAULT_FILTERS, Filters, STAGE_NAMES, STAGE_WEIGHT, analyse, buckets, crmScopeOf, dataHealth, fmtDay, fmtEGP, fmtPct, isManagerScope,
-  mean, pc, periodRange, prepare, selectPool, todayISO,
+  isEngaged, mean, pc, periodRange, prepare, selectPool, todayISO,
 } from './leadMetrics';
 import { Card, BarRow, FilterBar, InfoTip, Kpi, Pill } from './CrmMetricsUi';
-import { SOURCES, isMarketingSource, statusStage } from './leadConfig';
+import { SOURCES, isMarketingSource } from './leadConfig';
 
 interface CrmReportsProps {
   leads: Lead[];
 }
 
-// SLA outcome of one lead: 'met' | 'violated' | null (no/invalid deadline = not measurable)
-const slaOutcome = (l: Lead, nowMs: number): 'met' | 'violated' | null => {
-  if (!l.slaDeadline) return null;
-  const deadline = new Date(l.slaDeadline).getTime();
-  if (!Number.isFinite(deadline)) return null;
-  const stage = statusStage(l.status);
-  if (stage === 'won' || stage === 'lost') {
-    const closed = new Date(l.lastUpdated || l.date).getTime();
-    if (!Number.isFinite(closed)) return null;
-    return closed <= deadline ? 'met' : 'violated';
-  }
-  return deadline - nowMs < 0 ? 'violated' : 'met';
-};
+const CrmTeamPerformance = lazy(() => import('./CrmTeamPerformance').then((m) => ({ default: m.CrmTeamPerformance })));
+type Tab = 'overview' | 'funnel' | 'trend' | 'winloss' | 'channels' | 'demand' | 'service' | 'forecast' | 'team';
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'overview', label: 'Overview' }, { id: 'funnel', label: 'Funnel & aging' }, { id: 'trend', label: 'Leads over time' }, { id: 'winloss', label: 'Win / loss' },
+  { id: 'channels', label: 'Channels & sources' }, { id: 'demand', label: 'Projects & demand' }, { id: 'service', label: 'Response & follow-up' },
+  { id: 'forecast', label: 'Closing forecast' }, { id: 'team', label: 'Team performance' },
+];
 
 const TH = 'py-2 px-2 text-[10px] uppercase text-brand-gray font-bold tracking-wide';
 const TD = 'py-2 px-2 font-mono';
-const csvCell = (v: unknown) => {
-  let s = String(v ?? '');
-  if (/^[=+\-@]/.test(s)) s = `'${s}`; // spreadsheet formula guard
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-};
 
 type Col = { head: string; info?: string; cell: (b: Breakdown) => React.ReactNode; right?: boolean };
 const BreakTable: React.FC<{ rows: Breakdown[]; first: string; cols: Col[]; limit?: number; empty?: string }> = ({ rows, first, cols, limit = 30, empty = 'No data in this period.' }) => (
@@ -66,6 +59,10 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
   const scope = crmScopeOf(user, permissions);
   const manager = isManagerScope(scope);
   const [f, setF] = useState<Filters>(DEFAULT_FILTERS);
+  const [tab, setTab] = useState<Tab>('overview');
+  const [actVer, setActVer] = useState(0);
+  useEffect(() => { const h = () => setActVer((v) => v + 1); window.addEventListener('crm-data-changed', h); return () => window.removeEventListener('crm-data-changed', h); }, []);
+  const acts = useMemo(() => crmService.getActivities(), [leads, actVer]);
 
   const all = useMemo(() => prepare(leads), [leads]);
   const range = useMemo(() => periodRange(f.period, f.from, f.to), [f.period, f.from, f.to]);
@@ -92,20 +89,22 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
     return pool.filter((p) => p.won && (allTime || (p.closing >= range.from && p.closing <= range.to))).sort((a, b) => b.closing.localeCompare(a.closing));
   }, [pool, range, f.period]);
 
+  // SLA is judged on the FIRST ACTION (not on the last update, which moves for any later edit)
   const sla = useMemo(() => {
-    const now = Date.now(); let met = 0, viol = 0;
-    pool.forEach((p) => { const o = slaOutcome(p.l, now); if (o === 'met') met++; else if (o === 'violated') viol++; });
-    return { met, viol, rate: pc(met, met + viol) };
-  }, [pool]);
+    const idx = activityIndex(acts); const now = Date.now(); let met = 0, viol = 0, pending = 0;
+    pool.forEach((p) => { const o = slaResult(p.l, firstActionMs(p.l, idx), now); if (o === 'met') met++; else if (o === 'breached') viol++; else if (o === 'pending') pending++; });
+    return { met, viol, pending, rate: pc(met, met + viol) };
+  }, [pool, acts]);
+  const neverContacted = useMemo(() => pool.filter((p) => p.owner && p.open && !isEngaged(p.l)).length, [pool]);
+  // leads right now, ignoring the period (aging, follow-up, forecast tabs)
+  const openAll = useMemo(() => selectPool(all, { ...f, period: 'all' }, range).filter((p) => p.open), [all, f.owner, f.source]); // eslint-disable-line react-hooks/exhaustive-deps
+  const headline = useMemo(() => { const x = emptyTally(); pool.forEach((p) => tallyAdd(x, p, range, f.period === 'all')); return x; }, [pool, range, f.period]);
+  const ctx: ReportCtx = useMemo(() => ({ pool, openAll, range, allTime: f.period === 'all', today: todayISO(), nowMs: Date.now(), acts, manager, periodNote: range.label }), [pool, openAll, range, f.period, acts, manager]);
 
-  const exportDeals = () => {
-    const head = ['Closing date', 'Lead', 'Client', 'Company', 'Project', 'Source', 'Salesperson', 'Deal value (EGP)', 'Area (sqm)', 'Plot', 'Cash status'];
-    const rows = deals.map((p) => [p.closing, p.id, p.l.customerName, p.l.companyName || '', p.project, p.source, p.ownerName, p.value || '', p.area || '', p.l.plotNo || '', p.l.cashStatus === 'confirmed' ? 'Confirmed' : 'Pending']);
-    const csv = '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const a = document.createElement('a'); a.href = url; a.download = `deals-won-${range.from}_${range.to}.csv`; a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
-  };
+  const dealSheets = () => [{ name: 'Deals won', rows: [
+    ['Closing date', 'Lead', 'Client', 'Company', 'Project', 'Source', 'Salesperson', 'Deal value (EGP)', 'Area (sqm)', 'Plot', 'Cash status'],
+    ...deals.map((p) => [p.closing, p.id, p.l.customerName, p.l.companyName || '', p.project, p.source, p.ownerName, p.value || '', p.area || '', p.l.plotNo || '', p.l.cashStatus === 'confirmed' ? 'Confirmed' : 'Pending']),
+  ] }];
 
   const maxLost = A.byReason[0]?.count || 0;
   const lostTotal = A.byReason.reduce((s, r) => s + r.count, 0);
@@ -132,9 +131,7 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
           <p className="text-xs text-brand-gray/80 mt-1">{manager ? 'Team-wide figures for the leads you manage.' : 'Your own figures.'} Every column header with an info icon says what it counts and against what.</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={exportDeals} disabled={!deals.length} className="bg-brand-gray/10 hover:bg-brand-gray/20 disabled:opacity-40 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
-            <Download size={13} /><span>Export deals (CSV)</span>
-          </button>
+          <ExportBar name={`deals-won-${range.from}_${range.to}`} sheets={dealSheets} disabled={!deals.length} />
           <button onClick={() => window.print()} className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
             <Printer size={13} /><span>Print</span>
           </button>
@@ -143,12 +140,41 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
 
       <FilterBar f={f} set={setF} owners={manager ? owners : undefined} sources={sources} rangeLabel={`${range.label} · ${pool.length} leads`} />
 
+      <div className="flex flex-wrap gap-1 bg-brand-gray/10 rounded-xl p-1 print:hidden" role="tablist">
+        {TABS.map((x) => (
+          <button key={x.id} role="tab" aria-selected={tab === x.id} onClick={() => setTab(x.id)}
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${tab === x.id ? 'bg-white text-brand-black shadow-sm' : 'text-brand-gray hover:text-brand-black'}`}>{x.label}</button>
+        ))}
+      </div>
+
+      {tab === 'funnel' && <FunnelAgingTab c={ctx} />}
+      {tab === 'trend' && <TrendTab c={ctx} />}
+      {tab === 'winloss' && <WinLossTab c={ctx} />}
+      {tab === 'channels' && <ChannelsTab c={ctx} />}
+      {tab === 'demand' && <DemandTab c={ctx} />}
+      {tab === 'service' && <ServiceTab c={ctx} />}
+      {tab === 'forecast' && <ForecastTab c={ctx} />}
+      {tab === 'team' && <Suspense fallback={<p className="text-brand-gray py-6 text-center">Loading…</p>}><CrmTeamPerformance leads={leads} filters={f} /></Suspense>}
+
+      {tab === 'overview' && (<>
+      {/* headline */}
+      <Card title="At a glance" info="Leads of the period = lead date inside the window, plus deals won inside it. Conversion = won ÷ those leads (open leads still count, so a young period reads low). Win rate (decided) = won ÷ (won + lost): open leads are left out. Average deal = won value ÷ won deals that carry a value.">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          <Kpi label="Leads" value={t.total} info="Leads of the period." />
+          <Kpi label="Conversion" value={fmtPct(convOf(headline), 1)} sub={`${t.won} won of ${t.total}`} info="Won ÷ leads of the period." />
+          <Kpi label="Win rate (decided)" value={fmtPct(decidedWinOf(headline), 1)} sub={`${t.won} won · ${t.lost} lost`} info="Won ÷ (won + lost). Lost = Lost, Not Interested, Low Budget." />
+          <Kpi label="Average deal" value={t.wonWithValue ? fmtEGP(t.wonValue / t.wonWithValue) : '—'} info="Won value ÷ won deals that carry a value." />
+          <Kpi label="Avg lead → deal" value={mean(t.cycles) == null ? '—' : `${Math.round(mean(t.cycles)!)} d`} sub={`${t.cycles.length} deals measured`} info="Mean days from lead date to won date, deals with both dates only." />
+          <Kpi label="Open pipeline" value={t.openWithValue ? fmtEGP(t.pipelineValue) : '—'} sub={`${t.open} open leads`} info="Deal value of open leads that carry one (unweighted)." />
+        </div>
+      </Card>
+
       {/* deals won */}
       <Card title="Deals won" info="Leads with status Won whose closing date is in the period (typed closing date, else EOI date on the EOI path, else reservation / EOI / contract date, else lead date). Value is the cash value in EGP. 'Cash pending' = Accounts Receivable has not confirmed the cash yet; only Accounts Receivable can confirm.">
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <Kpi label="Deals" value={t.won} info="Number of won deals in the period." tone="text-emerald-600" />
           <Kpi label="Value" value={t.wonWithValue ? fmtEGP(t.wonValue) : '—'} sub={`${t.wonWithValue} of ${t.won} have a value`} info="Sum of the deal value (EGP) of those deals." />
-          <Kpi label="Cash confirmed" value={t.cashConfirmed ? fmtEGP(t.cashConfirmedValue) : t.won ? '—' : '—'} sub={`${t.cashConfirmed} deals`} info="Deals whose cash Accounts Receivable has confirmed." tone="text-emerald-600" />
+          <Kpi label="Cash confirmed" value={t.cashConfirmed && t.cashConfirmedValue ? fmtEGP(t.cashConfirmedValue) : '—'} sub={`${t.cashConfirmed} deals`} info="Deals whose cash Accounts Receivable has confirmed." tone="text-emerald-600" />
           <Kpi label="Cash pending" value={t.cashPending && t.cashPendingValue ? fmtEGP(t.cashPendingValue) : '—'} sub={`${t.cashPending} deals`} info="Won deals not yet confirmed by Accounts Receivable." tone="text-amber-600" />
           <Kpi label="Area sold" value={t.wonArea ? `${Math.round(t.wonArea).toLocaleString('en-US')} sqm` : '—'} info="Sum of the sold area on those deals (only deals with an area)." />
         </div>
@@ -213,9 +239,9 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
 
       {/* pipeline */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card title="Open pipeline" info="Open leads (not Won, Lost, Not Interested, Low Budget, Wrong Number) by the furthest stage reached. Probability: contacted 5%, qualified 15%, offer or meeting 35%, negotiation 60%. Expected deals = open leads × probability. Values only include leads that carry a deal value.">
+        <Card title="Open pipeline" info="Open leads (not Won, Lost, Not Interested, Low Budget, Wrong Number) by the furthest stage reached; 'Not contacted' leads carry no probability. Probability: contacted 5%, qualified 15%, offer or meeting 35%, negotiation 60%. Expected deals = open leads × probability. Values only include leads that carry a deal value.">
           <div className="space-y-2">
-            {stageRows.slice(1).map((s) => <BarRow key={s.name} label={s.name} value={s.n} max={openMax} right={`${s.n} · ${Math.round(s.w * 100)}%`} />)}
+            {stageRows.map((s) => <BarRow key={s.name} label={s.name} value={s.n} max={openMax} right={`${s.n} · ${Math.round(s.w * 100)}%`} />)}
           </div>
           <div className="grid grid-cols-3 gap-3 text-center pt-2 border-t border-brand-gray/10">
             <div><p className="text-lg font-black font-mono">{t.open}</p><p className="text-[10px] text-brand-gray font-bold uppercase">Open leads</p></div>
@@ -235,7 +261,7 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
       </div>
 
       {/* speed */}
-      <Card title="Speed to first contact" info="Wait = first-contact time − lead date. Bands: up to 1 day, up to 2 days, up to 7 days, longer. 'Never contacted' = has an owner, no first contact, not won. Measured only on leads with a first-contact time.">
+      <Card title="Speed to first contact" info="Wait = first-contact time − lead date. Bands: up to 1 day, up to 2 days, up to 7 days, longer. 'Never contacted' = open lead with an owner and no first-contact stamp, no contact date, no offer or meeting and still in New / Assigned. Bands are measured only on leads with a first-contact time.">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             ['Same or next day', A.speed.bands.same], ['Within two days', A.speed.bands.two], ['Inside a week', A.speed.bands.week], ['More than a week', A.speed.bands.more],
@@ -247,7 +273,7 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
             </div>
           ))}
         </div>
-        <p className="text-[10px] text-brand-gray">Never contacted: {A.speed.never}. Leads measured: {A.speed.measured}.</p>
+        <p className="text-[10px] text-brand-gray">Never contacted: {neverContacted} (open leads with an owner and no sign anybody worked them). Leads measured: {A.speed.measured}.</p>
       </Card>
 
       {/* monthly */}
@@ -297,13 +323,15 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
       </Card>
 
       {/* SLA (leads that carry a deadline) */}
-      <Card title="SLA compliance" info="Only leads that carry an SLA deadline are measured. Open leads: met while the deadline is in the future. Won or lost leads: met if the last update was before the deadline.">
-        <div className="grid grid-cols-3 gap-3 text-center">
+      <Card title="SLA compliance" info="Only leads that carry an SLA deadline are measured. Met = the owner's first action came on or before the deadline. Violated = it came after, or has not come and the deadline has passed. Pending = open, no action yet, deadline still ahead (left out of the rate). The 'Response & follow-up' tab explains the first action.">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
           <Kpi label="Compliance" value={fmtPct(sla.rate)} info="Met ÷ (met + violated)." />
-          <Kpi label="Met" value={sla.met} info="Leads inside their SLA." tone="text-emerald-600" />
-          <Kpi label="Violated" value={sla.viol} info="Leads past their SLA deadline." tone="text-rose-600" />
+          <Kpi label="Met" value={sla.met} info="First action on time." tone="text-emerald-600" />
+          <Kpi label="Violated" value={sla.viol} info="First action late or missing past the deadline." tone="text-rose-600" />
+          <Kpi label="Pending" value={sla.pending} info="Deadline still ahead, no action yet." />
         </div>
       </Card>
+      </>)}
     </div>
   );
 };

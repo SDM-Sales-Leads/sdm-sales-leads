@@ -20,7 +20,7 @@ route("POST", "/cron/ingest", async ({ req }) => {
   if (!want || !safeEqual(given, want)) throw new HttpError(401, "Not allowed");
   const { data } = await admin.from("system_config").select("value").eq("key", "ingest_auto").maybeSingle();
   if (data?.value !== true) return { skipped: true, reason: "automatic ingestion is off" };
-  return await ingestInbox(8, "Scheduled run");
+  return await ingestInbox(25, "Scheduled run");
 }, { public: true });
 
 Deno.serve(async (req: Request) => {

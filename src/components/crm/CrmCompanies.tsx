@@ -115,13 +115,15 @@ export const CrmCompanies: React.FC<CrmCompaniesProps> = ({
 
   // Cross-link hook: auto-select company if set in localStorage
   useEffect(() => {
+    const coId = localStorage.getItem('selected_company_id');
     const coName = localStorage.getItem('selected_crm_company_name');
-    if (coName) {
-      const found = companies.find(co => (co.name || '').toLowerCase() === coName.toLowerCase());
+    if (coId || coName) {
+      const found = (coId && companies.find(co => co.id === coId)) || (coName ? companies.find(co => (co.name || '').toLowerCase() === coName.toLowerCase()) : undefined);
       if (found) {
         setSelectedCompany(found);
       }
       localStorage.removeItem('selected_crm_company_name');
+      localStorage.removeItem('selected_company_id');
     }
   }, [companies]);
 

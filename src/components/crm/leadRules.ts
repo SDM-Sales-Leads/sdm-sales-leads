@@ -135,7 +135,7 @@ export function withSideEffects(prev: Lead | null, next: Lead, actor?: { id?: st
 
 /** Fields of a lead the editor may send. Everything else on the record is left untouched. */
 export const EDITABLE_KEYS = [
-  'customerName', 'companyName', 'phoneNumber', 'phone2', 'email', 'project', 'requiredSize', 'source', 'priority', 'date',
+  'customerName', 'companyName', 'phoneNumber', 'phone2', 'email', 'project', 'requiredSize', 'source', 'channel', 'priority', 'date',
   'industry', 'nationality', 'status', 'nextFollowUpDate', 'nextFollowUpTime', 'meetingDate', 'meetingTime', 'offerSent', 'offerDate',
   'qualification', 'temperature', 'qualNotes', 'notes', 'lostCategory', 'lostReason', 'lostComment',
   'eoiApplicable', 'eoiDate', 'reservationDate', 'contractDate', 'wonDate', 'dealValue', 'totalSoldValue', 'soldArea', 'plotNo',

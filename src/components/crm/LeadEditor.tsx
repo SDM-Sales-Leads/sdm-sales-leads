@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import type { Lead } from './types';
 import {
   INDUSTRIES, LOST_CATEGORIES, LOST_REASONS_TEAM, PRIORITIES, PROJECTS, QUALIFICATIONS, REQ_DATETIME, REQ_FOLLOWUP, SOURCES,
-  TEMPERATURES, closingDate, isOpenStatus, normSource,
+  TEMPERATURES, CHANNELS, closingDate, isOpenStatus, normSource,
 } from './leadConfig';
 import { EDITABLE_KEYS, LeadAuth, fieldRights, prioKey, statusOptions, validateLead, withSideEffects, addDaysISO } from './leadRules';
 import { crmService } from './crmService';
@@ -14,9 +14,11 @@ import { crmService } from './crmService';
 export const NATIONALITIES = ['Egyptian', 'Saudi', 'Emirati', 'Kuwaiti', 'Qatari', 'Bahraini', 'Omani', 'Yemeni', 'Jordanian', 'Lebanese', 'Syrian', 'Palestinian', 'Iraqi', 'Sudanese', 'Libyan', 'Tunisian', 'Algerian', 'Moroccan', 'Turkish', 'Chinese', 'Indian', 'Pakistani', 'Russian', 'Italian', 'German', 'French', 'Spanish', 'British', 'American', 'Greek', 'Korean', 'Japanese', 'Nigerian', 'Kenyan', 'Ethiopian', 'Tanzanian', 'South African', 'Other'];
 
 type Draft = Record<string, any>;
+// 'channel' is protected on the server like source / phone (leadRules.EDITABLE_KEYS does not list it, so it is added here)
+const KEYS: readonly string[] = [...EDITABLE_KEYS, 'channel'];
 const toDraft = (l: Lead): Draft => {
   const d: Draft = {};
-  for (const k of EDITABLE_KEYS) {
+  for (const k of KEYS) {
     const v = (l as any)[k];
     d[k] = v === undefined || v === null ? (k === 'offerSent' ? false : k === 'eoiApplicable' ? null : '') : v;
   }
@@ -56,7 +58,7 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
   const [dupMsg, setDupMsg] = useState<{ id: string; owner: string; why: string } | null>(null);
 
   const original = useMemo(() => toDraft(lead), [lead]);
-  const dirtyKeys = useMemo(() => EDITABLE_KEYS.filter((k) => !eq(d[k], original[k])), [d, original]);
+  const dirtyKeys = useMemo(() => KEYS.filter((k) => !eq(d[k], original[k])), [d, original]);
   const dirty = dirtyKeys.length > 0;
   const stale = dirty && (lead as any)._rev !== baseRev;
 
@@ -127,6 +129,7 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
 
   const lockedCore = !rights.core, lockedFollow = !rights.follow;
   const sourceOptions = Array.from(new Set([...SOURCES, ...(d.source ? [String(d.source)] : [])]));
+  const channelOptions = Array.from(new Set<string>([...CHANNELS, ...(d.channel ? [String(d.channel)] : [])]));
   const projectOptions = Array.from(new Set([...PROJECTS, ...(d.project ? [String(d.project)] : [])]));
   const industryOptions = Array.from(new Set([...INDUSTRIES, ...(d.industry ? [String(d.industry)] : [])]));
   const showStages = rights.stages;
@@ -259,6 +262,12 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
         </Field>
         <Field label="E-mail" locked={lockedCore}>
           <input type="email" value={d.email} disabled={lockedCore} onChange={(e) => set('email', e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Channel" locked={lockedCore}>
+          <select value={d.channel} disabled={lockedCore} onChange={(e) => set('channel', e.target.value)} className={inputCls}>
+            <option value="">—</option>
+            {channelOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
         </Field>
         <Field label="Lead source" locked={lockedCore}>
           <select value={d.source} disabled={lockedCore} onChange={(e) => set('source', e.target.value)} className={inputCls}>

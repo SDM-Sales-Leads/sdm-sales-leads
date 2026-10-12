@@ -81,6 +81,14 @@ export function sanitizeParsed(p: any): Parsed {
   };
 }
 
+// keep only what the person wrote: drop the call-center signature, legal disclaimer, scanner footer and the app's "Date:" line
+export function cleanDescription(t: string): string {
+  return (t || "")
+    .replace(/CAUTION:?\s*This email originated from outside[^.]*\.[^.]*\./i, "")
+    .split(/\n[ \t]*(?:Best Regards|Kind Regards|Regards|Thanks? (?:&|and) regards)\b|\bDisclaimer:|This email was scanned by|\n[ \t]*Date:[ \t]*\d{4}-/i)[0]
+    .replace(/\s+/g, " ").trim().slice(0, 2000);
+}
+
 export function regexParse(text: string): Parsed {
   const grab = (names: string) => {
     const m = text.match(new RegExp(`(?:\\n|^)[ \\t]*(?:${names})[ \\t:/]*\\n?[ \\t]*([^\\n\\r]+)`, "i"));
@@ -91,7 +99,7 @@ export function regexParse(text: string): Parsed {
   if (cm) {
     let r = cm[1].trim();
     if (r.toLowerCase().startsWith("call summary")) r = r.slice(12).trim();
-    desc = r.replace(/This email was scanned by Bitdefender[\s\S]*/i, "").trim();
+    desc = cleanDescription(r);
   }
   return sanitizeParsed({
     customerName: grab("Customer Name|Name|اسم العميل|الاسم|customer_name"),
@@ -316,6 +324,14 @@ async function logMail(head: { id: string; receivedTime?: string; sender?: strin
   });
 }
 
+// where the e-mail came from: the call-center agency sends "SDM Sales Lead | phone | name", the mobile app sends "Sales Lead :: Mobile App"
+export function channelFromMail(h: { sender?: string; subject?: string }): string {
+  const s = `${h.sender || ""} ${h.subject || ""}`.toLowerCase();
+  if (s.includes("mobile app")) return "Mobile App";
+  if (s.includes("rayacx") || s.includes("call center") || /sdm sales lead\s*\|/.test(s)) return "Call Center";
+  return "";
+}
+
 export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text: string, byUser?: string) {
   const q = await loadQueue();
   const id = await nextId("lead");
@@ -330,7 +346,8 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
     project: parsed.project,
     requiredSize: parsed.requiredSize ?? "",
     budget: parsed.budget ?? undefined,
-    source: parsed.source || "Email",
+    source: parsed.source || "",
+    channel: channelFromMail(head),
     priority: parsed.priority || "Medium",
     description: parsed.description,
     status: "New",
@@ -363,12 +380,12 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
 // ---------------------------------------------------------------------------------------------
 // the inbox run
 // ---------------------------------------------------------------------------------------------
-export async function ingestInbox(max = 8, byUser?: string) {
+export async function ingestInbox(max = 25, byUser?: string) {
   if (!(await tryLock("ingest", 150))) return { newLeadsCount: 0, processed: 0, remaining: 0, skipped: true };
   try {
     const cfg = await loadEws();
     const queue = await loadQueue();
-    const heads = (await listFolder(cfg, "inbox", 40)).filter((h) => subjectLooksLikeLead(h.subject));
+    const heads = (await listFolder(cfg, "inbox", 100)).filter((h) => subjectLooksLikeLead(h.subject));
     if (!heads.length) return { newLeadsCount: 0, processed: 0, remaining: 0 };
 
     const ids = heads.map((h) => h.id);

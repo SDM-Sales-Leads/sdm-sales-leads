@@ -13,7 +13,7 @@ export const LEGACY_STATUSES = ["Assigned", "Contacted", "Follow Up", "Meeting S
 export const ALL_STATUSES = new Set([...TEAM_STATUSES, ...LEGACY_STATUSES]);
 
 /** fields only Sales Operation / admin may change on an existing lead (identity and origin of the lead) */
-export const PROTECTED_FOR_REPS = ["source", "phoneNumber", "email", "date", "priority", "legacyId", "legacyOwnerName", "srcOriginal", "contract"];
+export const PROTECTED_FOR_REPS = ["source", "channel", "phoneNumber", "email", "date", "priority", "legacyId", "legacyOwnerName", "srcOriginal", "contract"];
 /** fields only accounts receivable (or operations) may change */
 const CASH_FIELDS = ["cashStatus", "cashBy", "cashDate"];
 

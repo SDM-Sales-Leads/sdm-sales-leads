@@ -193,13 +193,18 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
     setSimulationResult(null);
     setSyncNotification(null);
     try {
-      const res = await fetch('/api/crm/trigger-auto-sync', {
-        method: 'POST'
-      });
-      const data = await res.json();
-      
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to sync');
+      // one click reads the whole mailbox: the server takes 25 e-mails per call, so keep asking until none are left
+      const data: any = { success: true, newLeadsCount: 0, processed: 0, duplicates: 0, failed: 0, leads: [], remaining: 0 };
+      for (let round = 0; round < 12; round++) {
+        const res = await fetch('/api/crm/trigger-auto-sync', { method: 'POST' });
+        const part = await res.json();
+        if (!part.success) { if (round === 0) throw new Error(part.error || 'Failed to sync'); break; }
+        if (part.skipped) { data.skipped = round === 0; break; }
+        data.newLeadsCount += part.newLeadsCount || 0; data.processed += part.processed || 0;
+        data.duplicates += part.duplicates || 0; data.failed += part.failed || 0;
+        data.leads.push(...(part.leads || [])); data.remaining = part.remaining || 0;
+        setSyncStatus(`Reading the mailbox… ${data.processed} e-mails checked, ${data.newLeadsCount} new leads so far`);
+        if (!part.remaining) break;
       }
 
       // Re-fetch webmail to show latest (forcing cache bypass)

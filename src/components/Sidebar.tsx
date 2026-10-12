@@ -286,7 +286,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const crmSubTabs = [
     { id: 'dashboard', label: 'Executive Board', icon: LayoutDashboard, permission: permissions?.canViewSalesDashboard },
     { id: 'my-day', label: 'My Day', icon: CheckSquare, permission: permissions?.canViewSalesLeads || permissions?.canViewSalesCrm },
-    { id: 'leads', label: 'Inquiries CRM', icon: Layers, permission: permissions?.canViewSalesLeads },
+    { id: 'leads', label: 'Sales Leads', icon: Layers, permission: permissions?.canViewSalesLeads },
     { id: 'contacts', label: 'Contacts', icon: Users, permission: permissions?.canViewSalesContacts },
     { id: 'companies', label: 'Corporate Accounts', icon: Building, permission: permissions?.canViewSalesCompanies },
     { id: 'queue', label: 'Mail Ingestion', icon: Mail, permission: permissions?.canViewSalesMail },
@@ -294,6 +294,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'activities', label: 'Activities Feed', icon: Activity, permission: permissions?.canViewSalesActivities },
     { id: 'reports', label: 'Sales Reports', icon: BarChart, permission: permissions?.canViewSalesReports },
     { id: 'plots-inventory', label: 'Plots Inventory', icon: Database, permission: permissions?.canViewSalesPlotsInventory },
+    { id: 'team-performance', label: 'Team Performance', icon: Users, permission: permissions?.canViewSalesReports },
     { id: 'calendar', label: 'Calendar', icon: Calendar, permission: permissions?.canViewSalesCrm || permissions?.canViewSalesLeads },
     { id: 'achievements', label: 'Achievements', icon: Trophy, permission: (permissions?.canViewSalesCrm || permissions?.canViewSalesLeads) && !(permissions?.canViewSalesDashboard || permissions?.canViewSalesRules) },
     { id: 'hierarchy', label: 'Hierarchy', icon: Network, permission: permissions?.canViewSalesDashboard || permissions?.canViewSalesRules },
