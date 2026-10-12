@@ -55,3 +55,30 @@ If the plot is no longer available the page says so instead of opening the dialo
 Printing a commercial offer needs a Sales Leads contact: Sales offer (cash or instalments), Initial financial offer, and the Investor Match proposal with prices.
 The Technical annex stays free. The Land Bank page opens a "Customer" picker (search -> `/integration/contacts`) before building the PDF and records the print
 (`/integration/offer-printed`) after the PDF is produced. If Sales Leads cannot be reached, or the person has no Sales Leads account, printing is refused with a clear message (fail closed).
+
+## 7. Addendum — demand analytics (both directions)
+### 7.1 Richer print record (Land Bank -> Sales Leads)
+`POST /integration/offer-printed` additionally accepts `plan` (object, optional, all fields optional/clipped):
+`{ mode: 'cash'|'plan'|'custom', advancePct, years, paymentsPerYear, interestPct, instalments, escalationPct, fixedAnnual: bool, totalPayable, cashTotal }` and each entry of `plots[]` additionally `{ landType, sector, listPriceSqm, project }`.
+Stored in new column `crm_offer_prints.plan jsonb` (plots jsonb already holds the entries). The Land Bank gate fills them from the offer it just built.
+
+### 7.2 Link clicks (Sales Leads client)
+Every "Hold in Land Bank" / "Open in Land Bank" click in Sales Leads fires `POST /crm/lb-click` `{ plotKey, kind: 'hold'|'open', leadId? }` (fire-and-forget, `keepalive`) -> table `crm_lb_clicks(id uuid, user_id uuid, user_name text, plot_key text, kind text, lead_id text, clicked_at timestamptz)`.
+
+### 7.3 Per-salesperson Land Bank activity (Sales Leads)
+`GET /crm/lb-activity?from=&to=` (normal login; scope: manager/ops/admin/viewall see people in scope, a rep sees only self; finance 403) ->
+`{ success, rows:[{ userId, name, salesOffers, financialOffers, proposals, totalPrints, uniqueContacts, uniquePlots, holdClicks, openClicks, lastPrintAt, lastClickAt }], totals:{...} }`
+(printed_by = user; one print = one row of crm_offer_prints; a PDF with several plots counts once.)
+
+### 7.4 Demand statistics for the Land Bank (Land Bank token)
+`GET /integration/offer-stats?from=&to=` — only app_users roles Admin / Sales Operation / Sales Director / Executive (View) / Business Development? NO: only Admin, Sales Operation, Sales Director, Executive (View) -> otherwise 403. Returns
+`{ success, generatedAt, totals:{prints, salesOffers, financialOffers, proposals, contacts, plots},
+   perPlot:[{ key, project, unit, landType, sector, areaSqm, sales, financial, proposal, total, contacts, lastAt }],
+   byProject:[{ project, total, sales, financial, proposal, plots }], byLandType:[...], bySector:[...], bySizeBand:[{band,total}],
+   plans:[{ label, mode, advancePct, years, paymentsPerYear, count }],            // grouped by identical (mode, advancePct, years, paymentsPerYear)
+   planSummary:{ cash, plan, custom, avgAdvancePct, avgYears, mostCommon:{label,count} },
+   monthly:[{ month:'YYYY-MM', total }] }`
+Aggregate in SQL/JS over crm_offer_prints (plots jsonb expanded; a print with several plots adds 1 to each plot's counters but 1 to the print totals). Max 20,000 prints scanned; cache the response 60 s in memory.
+
+### 7.5 Land Bank UI
+A new page/tab "Offer demand" (admins / ops / managers who may call 7.4): KPI cards (prints, sales offers, initial offers, proposals), a MAP HEAT layer (toggle on the map page: plots coloured by print count, legend), ranked tables (top plots, projects, industries/land types, size bands), a "Preferred payment plans" card (cash vs instalments share, most common plan, average advance %, average years, ranked plans), monthly trend. Click a row -> show on map. Data loaded only when the page opens (+ a Refresh button); no polling.

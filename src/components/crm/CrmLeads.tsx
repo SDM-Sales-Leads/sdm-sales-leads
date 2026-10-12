@@ -2560,6 +2560,7 @@ ${user.name || ''}`);
               <CrmPlotRecommendations 
                   plots={plots} 
                   landBankUrl={plotsInfo?.landBankUrl}
+                  leadId={selectedLead.id}
                   project={selectedLead.project} 
                   requiredSize={selectedLead.requiredSize}
                   onNavigateToInventory={() => setActiveSubTab('plots-inventory')}

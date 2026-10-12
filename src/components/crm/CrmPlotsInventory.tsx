@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ExternalLink, Loader2, RefreshCw, Search, X } from 'lucide-react';
-import { Plot, PlotStatus, PlotsState, agoText, isOlderThan24h, landBankLink, loadPlots, plotsAreStale, getPlotsSnapshot } from '../../lib/plotsService';
+import { Plot, PlotStatus, PlotsState, agoText, isOlderThan24h, landBankLink, loadPlots, trackLbClick, plotsAreStale, getPlotsSnapshot } from '../../lib/plotsService';
 import { PagerBar } from './LeadListParts';
 import { useDebounced, usePagedList } from './usePagedList';
 import { OfferPrintsList } from './OfferPrintsList';
@@ -22,7 +22,7 @@ export const StatusPill: React.FC<{ status: PlotStatus }> = ({ status }) => (
 const LbLink: React.FC<{ plot: Plot; base: string; big?: boolean }> = ({ plot, base, big }) => {
   const hold = plot.status === 'available';
   return (
-    <a href={landBankLink(base, plot.key, hold ? 'hold' : 'plot')} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
+    <a href={landBankLink(base, plot.key, hold ? 'hold' : 'plot')} target="_blank" rel="noopener noreferrer" onClick={(e) => { e.stopPropagation(); trackLbClick(plot.key, hold ? 'hold' : 'open'); }}
       className={hold
         ? `inline-flex items-center gap-1 rounded-lg bg-brand-red text-white font-bold whitespace-nowrap hover:opacity-90 ${big ? 'px-4 py-2 text-xs' : 'px-2.5 py-1 text-[11px]'}`
         : `inline-flex items-center gap-1 rounded-lg border border-brand-gray/30 text-brand-black font-semibold whitespace-nowrap hover:bg-brand-gray/5 ${big ? 'px-4 py-2 text-xs' : 'px-2.5 py-1 text-[11px]'}`}>

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Plot, landBankLink } from '../../lib/plotsService';
+import { Plot, landBankLink, trackLbClick } from '../../lib/plotsService';
 import { MapPin, ExternalLink, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Props {
   plots: Plot[];
   landBankUrl?: string;
+  leadId?: string;
   project: string;
   requiredSize: string | number;
   onNavigateToInventory: () => void;
@@ -19,7 +20,7 @@ interface MergedPlotGroup {
   sector: string;
 }
 
-export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, project, requiredSize, onNavigateToInventory }) => {
+export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, leadId, project, requiredSize, onNavigateToInventory }) => {
   const [selectedPlot, setSelectedPlot] = useState<Plot | null>(null);
   const [selectedMergedPlot, setSelectedMergedPlot] = useState<MergedPlotGroup | null>(null);
 
@@ -152,7 +153,7 @@ export const CrmPlotRecommendations: React.FC<Props> = ({ plots, landBankUrl, pr
   };
 
   const holdLink = (pl: Plot) => (
-    <a href={landBankLink(landBankUrl, pl.key, 'hold')} target="_blank" rel="noopener noreferrer"
+    <a href={landBankLink(landBankUrl, pl.key, 'hold')} target="_blank" rel="noopener noreferrer" onClick={() => trackLbClick(pl.key, 'hold', leadId)}
       className="shrink-0 px-2.5 py-1.5 rounded-lg bg-brand-red text-white text-[10px] font-bold flex items-center gap-1 hover:opacity-90">
       Hold in Land Bank <ExternalLink size={10} />
     </a>

@@ -103,3 +103,13 @@ export async function fetchOfferPrints(params: { contactId?: string; leadId?: st
   if (!res.ok || !j || j.success === false) throw new Error((j && (j.error || j.message)) || `Offers could not be loaded (HTTP ${res.status}).`);
   return Array.isArray(j.rows) ? j.rows : [];
 }
+
+/** Fire-and-forget record of a click on a Land Bank link. Never throws, never delays the new tab. */
+export function trackLbClick(plotKey: string, kind: 'hold' | 'open', leadId?: string) {
+  try {
+    fetch('/api/crm/lb-click', {
+      method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plotKey, kind, ...(leadId ? { leadId } : {}) }),
+    }).catch(() => { /* ignored */ });
+  } catch { /* ignored */ }
+}

@@ -4,7 +4,7 @@
 //  - /plots, /crm/offer-prints, /integration/config use the normal Sales Leads login.
 // No cost / GP / client data is ever stored from the Land Bank: the plot snapshot is whitelisted field by field.
 import {
-  admin, asUuid, bad, body, can, Caller, callerFromEmail, clean, crmScope, forbidden, getConfig, HttpError, isAdmin, isObj,
+  admin, asUuid, bad, body, can, pageAll, Caller, callerFromEmail, clean, crmScope, forbidden, getConfig, HttpError, isAdmin, isObj,
   logActivity, needAdmin, needCrm, normEmail, normName, normPhone, nowIso, rateLimit, rid, setConfig, str,
 } from "./lib.ts";
 import { route } from "./router.ts";
@@ -106,6 +106,18 @@ lbRoute("POST", "/integration/plots-snapshot", async ({ req, c }) => {
   return { success: true, count: plots.length };
 });
 
+function cleanPlan(p: any): any | null {
+  if (!isObj(p)) return null;
+  const n = (v: any, max: number) => { const x = num(v); return x === null ? null : Math.max(0, Math.min(max, x)); };
+  const mode = str(p.mode, 10).toLowerCase();
+  return {
+    mode: ["cash", "plan", "custom"].includes(mode) ? mode : "cash",
+    advancePct: n(p.advancePct, 100), years: n(p.years, 50), paymentsPerYear: n(p.paymentsPerYear, 52), interestPct: n(p.interestPct, 200),
+    instalments: n(p.instalments, 1000), escalationPct: n(p.escalationPct, 200), fixedAnnual: p.fixedAnnual === true,
+    totalPayable: n(p.totalPayable, 1e13), cashTotal: n(p.cashTotal, 1e13),
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // 3. contacts picker
 // ---------------------------------------------------------------------------------------------
@@ -191,6 +203,7 @@ lbRoute("POST", "/integration/offer-printed", async ({ req, c }) => {
   if (!OFFER_TYPES[offerType]) throw bad("Unknown offer type");
   const plots = (Array.isArray(b.plots) ? b.plots : []).slice(0, 50).filter(isObj).map((p: any) => ({
     key: str(p.key, 160), park: str(p.park, 100), unit: str(p.unit, 160), areaSqm: num(p.areaSqm), status: str(p.status, 20).toLowerCase(),
+    project: str(p.project, 120), landType: str(p.landType, 120), sector: str(p.sector, 120), listPriceSqm: num(p.listPriceSqm),
   })).filter((p: any) => p.key || p.unit);
   const { k, links } = await visibleContact(c, str(b.contactId, 60));
 
@@ -212,7 +225,7 @@ lbRoute("POST", "/integration/offer-printed", async ({ req, c }) => {
   const summary = str(b.summary, 500) || `${label} for ${codes}`;
   const ins = await admin.from("crm_offer_prints").insert({
     contact_id: k.id, lead_id: lead?.id || null, offer_type: offerType, plots, total_value: total && total >= 0 ? total : null,
-    summary, doc_name: str(b.docName, 200) || null, printed_by: c.id, printed_by_name: c.name,
+    summary, plan: cleanPlan(b.plan), doc_name: str(b.docName, 200) || null, printed_by: c.id, printed_by_name: c.name,
   }).select("id").single();
   if (ins.error) throw new HttpError(500, "Could not record the offer");
 
@@ -303,4 +316,165 @@ route("POST", "/integration/config", async ({ req, c }) => {
   await setConfig("landbank_url", url);
   await logActivity(c, "Land Bank link", `Land Bank address set to ${u.origin}`, "admin");
   return { success: true, landBankUrl: url };
+});
+
+// ---------------------------------------------------------------------------------------------
+// 7. demand analytics
+// ---------------------------------------------------------------------------------------------
+route("POST", "/crm/lb-click", async ({ req, c }) => {
+  needCrm(c);
+  await rateLimit(`lbclick:${c.id}`, 60, 60);
+  const b = await body(req, 2000);
+  const kind = b.kind === "hold" ? "hold" : b.kind === "open" ? "open" : "";
+  const plotKey = str(b.plotKey, 160);
+  if (!kind || !plotKey) throw bad("Invalid request");
+  const lead = str(b.leadId, 60);
+  await admin.from("crm_lb_clicks").insert({ user_id: c.id, user_name: c.name, plot_key: plotKey, kind, lead_id: lead && ID_RE.test(lead) ? lead : null });
+  return { success: true };
+});
+
+/** from / to as YYYY-MM-DD (to inclusive) -> ISO bounds, or null */
+function range(query: URLSearchParams): { from: string | null; to: string | null } {
+  const d = (k: string, end: boolean) => {
+    const v = str(query.get(k), 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || isNaN(Date.parse(v))) return null;
+    const t = new Date(v + "T00:00:00Z"); if (end) t.setUTCDate(t.getUTCDate() + 1);
+    return t.toISOString();
+  };
+  return { from: d("from", false), to: d("to", true) };
+}
+
+route("GET", "/crm/lb-activity", async ({ c, query }) => {
+  needCrm(c);
+  const scope = crmScope(c);
+  if (scope === "finance") throw forbidden();
+  await rateLimit(`lbact:${c.id}`, 60, 30);
+  const { from, to } = range(query);
+  const ids: string[] | null = scope === "own" ? [c.id] : scope === "team" ? await teamIds(c) : null;
+  const prints = await pageAll((a, z) => {
+    let q: any = admin.from("crm_offer_prints").select("printed_by,printed_by_name,offer_type,contact_id,plots,printed_at").order("printed_at", { ascending: false }).order("id").range(a, z);
+    if (from) q = q.gte("printed_at", from); if (to) q = q.lt("printed_at", to);
+    if (ids) q = q.in("printed_by", ids);
+    return q;
+  }, 20000);
+  const clicks = await pageAll((a, z) => {
+    let q: any = admin.from("crm_lb_clicks").select("user_id,user_name,plot_key,kind,clicked_at").order("clicked_at", { ascending: false }).order("id").range(a, z);
+    if (from) q = q.gte("clicked_at", from); if (to) q = q.lt("clicked_at", to);
+    if (ids) q = q.in("user_id", ids);
+    return q;
+  }, 20000);
+  const people = new Map<string, any>();
+  const get = (id: string | null, name: string | null) => {
+    const k = id || "?";
+    let r = people.get(k);
+    if (!r) { r = { userId: id, name: name || "", salesOffers: 0, financialOffers: 0, proposals: 0, totalPrints: 0, uniqueContacts: 0, uniquePlots: 0, holdClicks: 0, openClicks: 0, lastPrintAt: null, lastClickAt: null, _c: new Set(), _p: new Set() }; people.set(k, r); }
+    if (!r.name && name) r.name = name;
+    return r;
+  };
+  for (const p of prints) {
+    const r = get(p.printed_by, p.printed_by_name);
+    if (p.offer_type === "sales_offer") r.salesOffers++; else if (p.offer_type === "financial_offer") r.financialOffers++; else r.proposals++;
+    r.totalPrints++;
+    if (p.contact_id) r._c.add(p.contact_id);
+    for (const x of Array.isArray(p.plots) ? p.plots : []) if (x?.key) r._p.add(x.key);
+    if (!r.lastPrintAt || p.printed_at > r.lastPrintAt) r.lastPrintAt = p.printed_at;
+  }
+  for (const k of clicks) {
+    const r = get(k.user_id, k.user_name);
+    if (k.kind === "hold") r.holdClicks++; else r.openClicks++;
+    if (!r.lastClickAt || k.clicked_at > r.lastClickAt) r.lastClickAt = k.clicked_at;
+  }
+  const rows = [...people.values()].map((r) => { r.uniqueContacts = r._c.size; r.uniquePlots = r._p.size; delete r._c; delete r._p; return r; })
+    .sort((a, b) => b.totalPrints - a.totalPrints || b.holdClicks + b.openClicks - (a.holdClicks + a.openClicks));
+  const totals = rows.reduce((t: any, r: any) => {
+    for (const k of ["salesOffers", "financialOffers", "proposals", "totalPrints", "holdClicks", "openClicks"]) t[k] += r[k];
+    return t;
+  }, { salesOffers: 0, financialOffers: 0, proposals: 0, totalPrints: 0, holdClicks: 0, openClicks: 0 });
+  return { success: true, rows, totals };
+});
+
+const statsCache = new Map<string, { until: number; data: any }>();
+const SIZE_BANDS: [string, number][] = [["< 2,000 m2", 2000], ["2,000 - 5,000 m2", 5000], ["5,000 - 10,000 m2", 10000], ["10,000 - 20,000 m2", 20000], ["20,000+ m2", Infinity]];
+const STATS_ROLES = new Set(["Admin", "Sales Operation", "Sales Director", "Executive (View)"]);
+
+lbRoute("GET", "/integration/offer-stats", async ({ c, query }) => {
+  if (!STATS_ROLES.has(c.role)) throw forbidden("Offer demand statistics are for management only");
+  await rateLimit(`lbstats:${c.id}`, 60, 20);
+  const { from, to } = range(query);
+  const ck = `${from || ""}|${to || ""}`;
+  const hit = statsCache.get(ck);
+  if (hit && hit.until > Date.now()) return hit.data;
+  const prints = await pageAll((a, z) => {
+    let q: any = admin.from("crm_offer_prints").select("contact_id,offer_type,plots,plan,printed_at").order("printed_at", { ascending: false }).order("id").range(a, z);
+    if (from) q = q.gte("printed_at", from); if (to) q = q.lt("printed_at", to);
+    return q;
+  }, 20000);
+  const field = (t: string) => (t === "sales_offer" ? "sales" : t === "financial_offer" ? "financial" : "proposal");
+  const totals = { prints: prints.length, salesOffers: 0, financialOffers: 0, proposals: 0, contacts: 0, plots: 0 };
+  const allContacts = new Set<string>();
+  const perPlot = new Map<string, any>(), byProject = new Map<string, any>(), byLand = new Map<string, any>(), bySector = new Map<string, any>();
+  const bands = new Map<string, number>(SIZE_BANDS.map(([b]) => [b, 0]));
+  const plans = new Map<string, any>(), monthly = new Map<string, number>();
+  const mode = { cash: 0, plan: 0, custom: 0 };
+  let advSum = 0, advN = 0, yrSum = 0, yrN = 0;
+  const bump = (m: Map<string, any>, k: string, init: any, f: string, plotKey: string) => {
+    let r = m.get(k); if (!r) { r = { ...init, total: 0, sales: 0, financial: 0, proposal: 0, _p: new Set() }; m.set(k, r); }
+    r.total++; r[f]++; r._p.add(plotKey);
+  };
+  for (const p of prints) {
+    const f = field(p.offer_type);
+    if (f === "sales") totals.salesOffers++; else if (f === "financial") totals.financialOffers++; else totals.proposals++;
+    if (p.contact_id) allContacts.add(p.contact_id);
+    const month = String(p.printed_at).slice(0, 7);
+    monthly.set(month, (monthly.get(month) || 0) + 1);
+    const pl = isObj(p.plan) ? p.plan : null;
+    if (pl) {
+      const m = pl.mode === "plan" ? "plan" : pl.mode === "custom" ? "custom" : "cash";
+      mode[m]++;
+      if (m === "plan") {
+        const label = `${pl.advancePct ?? "?"}% advance, ${pl.years ?? "?"} y, ${pl.paymentsPerYear ?? "?"}/y`;
+        const g = plans.get(label) || { label, mode: m, advancePct: pl.advancePct ?? null, years: pl.years ?? null, paymentsPerYear: pl.paymentsPerYear ?? null, count: 0 };
+        g.count++; plans.set(label, g);
+        if (typeof pl.advancePct === "number") { advSum += pl.advancePct; advN++; }
+        if (typeof pl.years === "number") { yrSum += pl.years; yrN++; }
+      }
+    }
+    // a print with several plots adds 1 to each distinct plot / group, but only 1 to the print totals
+    const seen = new Set<string>(), seenP = new Set<string>(), seenL = new Set<string>(), seenS = new Set<string>(), seenB = new Set<string>();
+    for (const x of Array.isArray(p.plots) ? p.plots : []) {
+      const key = str(x?.key, 160) || str(x?.unit, 160);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      let r = perPlot.get(key);
+      if (!r) { r = { key, project: str(x.project, 120) || str(x.park, 100), unit: str(x.unit, 160), landType: str(x.landType, 120), sector: str(x.sector, 120), areaSqm: num(x.areaSqm) ?? 0, sales: 0, financial: 0, proposal: 0, total: 0, _c: new Set(), lastAt: null }; perPlot.set(key, r); }
+      r[f]++; r.total++; if (p.contact_id) r._c.add(p.contact_id);
+      if (!r.lastAt || p.printed_at > r.lastAt) r.lastAt = p.printed_at;
+      const proj = r.project || "-", lt = r.landType || "-", sc = r.sector || "-";
+      if (!seenP.has(proj)) { seenP.add(proj); bump(byProject, proj, { project: proj }, f, key); } else byProject.get(proj)._p.add(key);
+      if (!seenL.has(lt)) { seenL.add(lt); bump(byLand, lt, { name: lt }, f, key); } else byLand.get(lt)._p.add(key);
+      if (!seenS.has(sc)) { seenS.add(sc); bump(bySector, sc, { name: sc }, f, key); } else bySector.get(sc)._p.add(key);
+      const band = (SIZE_BANDS.find(([, max]) => r.areaSqm < max) || SIZE_BANDS[SIZE_BANDS.length - 1])[0];
+      if (!seenB.has(band)) { seenB.add(band); bands.set(band, (bands.get(band) || 0) + 1); }
+    }
+  }
+  totals.contacts = allContacts.size; totals.plots = perPlot.size;
+  const fin = (m: Map<string, any>) => [...m.values()].map((r) => { const o: any = { ...r, plots: r._p.size }; delete o._p; return o; }).sort((a, b) => b.total - a.total);
+  const planList = [...plans.values()].sort((a, b) => b.count - a.count);
+  const data = {
+    success: true, generatedAt: nowIso(), totals,
+    perPlot: [...perPlot.values()].map((r) => { const o = { ...r, contacts: r._c.size }; delete (o as any)._c; return o; }).sort((a, b) => b.total - a.total).slice(0, 2000),
+    byProject: fin(byProject),
+    byLandType: fin(byLand).map((r) => { const o = { ...r, landType: r.name }; delete o.name; return o; }),
+    bySector: fin(bySector).map((r) => { const o = { ...r, sector: r.name }; delete o.name; return o; }),
+    bySizeBand: [...bands.entries()].map(([band, total]) => ({ band, total })),
+    plans: planList,
+    planSummary: {
+      ...mode, avgAdvancePct: advN ? Math.round((advSum / advN) * 10) / 10 : null, avgYears: yrN ? Math.round((yrSum / yrN) * 10) / 10 : null,
+      mostCommon: planList[0] ? { label: planList[0].label, count: planList[0].count } : null,
+    },
+    monthly: [...monthly.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([month, total]) => ({ month, total })),
+  };
+  if (statsCache.size > 20) statsCache.clear();
+  statsCache.set(ck, { until: Date.now() + 60_000, data });
+  return data;
 });

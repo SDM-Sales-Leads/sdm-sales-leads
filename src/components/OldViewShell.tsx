@@ -19,6 +19,7 @@ export function buildOldNav(p: any, role?: string): OldNavItem[] {
     { id: 'finance', tab: 'sales-crm', sub: 'finance', icon: '✓', label: 'Won Deals', show: fin },
     { id: 'reports', tab: 'sales-crm', sub: 'reports', icon: '▤', label: fin && !manage ? 'Revenue Reports' : 'Team Reports', show: !!p?.canViewSalesReports },
     { id: 'team-perf', tab: 'sales-crm', sub: 'team-performance', icon: '👥', label: 'Team Performance', show: !!p?.canViewSalesReports },
+    { id: 'lb-activity', tab: 'sales-crm', sub: 'lb-activity', icon: '🏢', label: 'Land Bank Activity', show: !!(p?.canViewSalesReports || p?.canViewSalesLeads) },
     { id: 'bd', tab: 'sales-crm', sub: 'bd-tracker', icon: '📋', label: 'BD Tracker', show: ['Business Development', 'Admin', 'Sales Operation', 'Sales Director', 'Executive (View)'].includes(role || '') },
     { id: 'calendar', tab: 'sales-crm', sub: 'calendar', icon: '▦', label: 'Calendar', show: crm },
     { id: 'achievements', tab: 'sales-crm', sub: 'achievements', icon: '🏅', label: 'Achievements', show: crm && !manage },
