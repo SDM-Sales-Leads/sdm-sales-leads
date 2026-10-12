@@ -150,17 +150,20 @@ export const KanbanCard = React.memo(({ lead: l, tone, winRate, canRoute, onOpen
 });
 KanbanCard.displayName = 'KanbanCard';
 
+export const ALL_CHUNK = 250; // rows drawn per step when the page size is "All"
 interface PagerProps {
   total: number; page: number; pageSize: PageSize;
   onPage: (p: number) => void; onSize: (s: PageSize) => void;
+  /** "All" is drawn in chunks (fast): how many rows are drawn now, and how to draw the next chunk */
+  shown?: number; onMore?: () => void;
 }
 /** "showing x-y of N" + size selector + page navigator */
-export const PagerBar: React.FC<PagerProps> = ({ total, page, pageSize, onPage, onSize }) => {
+export const PagerBar: React.FC<PagerProps> = ({ total, page, pageSize, onPage, onSize, shown, onMore }) => {
   const size = pageSize === 0 ? Math.max(total, 1) : pageSize;
   const pages = Math.max(1, Math.ceil(total / size));
   const p = Math.min(page, pages - 1);
   const from = total === 0 ? 0 : p * size + 1;
-  const to = Math.min(total, (p + 1) * size);
+  const to = pageSize === 0 && shown ? Math.min(total, shown) : Math.min(total, (p + 1) * size);
   const nums: (number | '…')[] = [];
   for (let i = 0; i < pages; i++) {
     if (i === 0 || i === pages - 1 || Math.abs(i - p) <= 1) nums.push(i);
@@ -177,6 +180,9 @@ export const PagerBar: React.FC<PagerProps> = ({ total, page, pageSize, onPage, 
           </select>
         </label>
       </div>
+      {pageSize === 0 && onMore && shown !== undefined && shown < total && (
+        <button onClick={onMore} className="px-3 py-1.5 rounded-lg bg-brand-red text-white text-[11px] font-bold">Show {Math.min(ALL_CHUNK, total - shown).toLocaleString('en-US')} more ({(total - shown).toLocaleString('en-US')} left)</button>
+      )}
       {pages > 1 && (
         <div className="flex items-center gap-1">
           <button onClick={() => onPage(p - 1)} disabled={p === 0} aria-label="Previous page" className="p-1.5 rounded-lg border border-brand-gray/20 bg-white disabled:opacity-40"><ChevronLeft size={14} /></button>

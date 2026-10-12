@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Contact, Lead, ContactEditLog } from './types';
 import { crmService, normalizePhone } from './crmService';
 import { csvCell } from '../../lib/plots';
@@ -30,6 +30,61 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { PagerBar } from './LeadListParts';
+import { useDebounced, makeSearchIndex, usePagedList } from './usePagedList';
+
+const phoneKey = (v?: string) => normalizePhone(v || '');
+const contactText = makeSearchIndex<Contact>(c => `${c.serialNumber || ''} ${c.name || ''} ${c.phoneNumber || ''} ${c.email || ''} ${c.company || ''} ${c.city || ''}`);
+interface ContactStat { totalLeads: number; wonDeals: number; lostDeals: number }
+const NO_STAT: ContactStat = { totalLeads: 0, wonDeals: 0, lostDeals: 0 };
+
+interface ContactRowProps {
+  c: Contact;
+  stats: ContactStat;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+  onOpen: (c: Contact) => void;
+}
+const ContactRow = React.memo<ContactRowProps>(({ c, stats, isSelected, onToggle, onOpen }) => (
+  <tr className={`hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
+    <td className="py-3.5 px-4">
+      <button onClick={() => onToggle(c.id)} className="focus:outline-none">
+        {isSelected ? (
+          <CheckSquare size={16} className="text-brand-red" />
+        ) : (
+          <Square size={16} className="text-brand-gray/60" />
+        )}
+      </button>
+    </td>
+    <td className="py-3.5 px-4 font-bold text-brand-black">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[9px] text-brand-red bg-brand-red/10 px-1.5 py-0.5 rounded font-bold">{c.serialNumber || 'N/A'}</span>
+        <span>{c.name}</span>
+      </div>
+    </td>
+    <td className="py-3.5 px-3 font-mono text-brand-gray">{c.phoneNumber}</td>
+    <td className="py-3.5 px-3 font-semibold text-brand-black">{c.company || 'Private Customer'}</td>
+    <td className="py-3.5 px-3 text-center">
+      <span className="bg-brand-red/10 text-brand-red px-2 py-0.5 rounded-full font-mono text-[10px] font-bold">
+        {stats.totalLeads} Leads
+      </span>
+    </td>
+    <td className="py-3.5 px-3 text-center text-[10px] font-mono">
+      <span className="text-emerald-700 font-bold">{stats.wonDeals} W</span>
+      <span className="mx-1 text-brand-gray">/</span>
+      <span className="text-rose-600 font-bold">{stats.lostDeals} L</span>
+    </td>
+    <td className="py-3.5 px-4 text-right">
+      <button
+        onClick={() => onOpen(c)}
+        className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-3 py-1 rounded-lg font-bold"
+      >
+        Details
+      </button>
+    </td>
+  </tr>
+));
+ContactRow.displayName = 'ContactRow';
 
 // Predefined lists of option strings for standard values
 const JOB_TITLE_OPTIONS = [
@@ -420,7 +475,6 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
   const [deleteConfirmBulk, setDeleteConfirmBulk] = useState(false);
   const [formError, setFormError] = useState('');
   const [notice, setNotice] = useState('');
-  const phoneKey = (v?: string) => normalizePhone(v || '');
 
   // Column management
   const [visibleColumns, setVisibleColumns] = useState<string[]>(['name', 'phone', 'company', 'pipelines', 'wonLost', 'view']);
@@ -499,12 +553,13 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
   }, []);
 
   // Filter Contacts
+  const debouncedSearch = useDebounced(searchTerm, 250);
   const filteredContacts = useMemo(() => {
-    return contacts.filter(c => {
-      const text = `${c.serialNumber || ''} ${c.name || ''} ${c.phoneNumber || ''} ${c.email || ''} ${c.company || ''} ${c.city || ''}`.toLowerCase();
-      return text.includes(searchTerm.toLowerCase());
-    });
-  }, [contacts, searchTerm]);
+    const q = debouncedSearch.toLowerCase();
+    return q ? contacts.filter(c => contactText(c).includes(q)) : contacts;
+  }, [contacts, debouncedSearch]);
+  const { pageRows, page, pageSize, setPage, setPageSize, allShown, more } = usePagedList(filteredContacts, 'sid_contacts_page_size', debouncedSearch);
+  const selectedSet = useMemo(() => new Set(selectedContactIds), [selectedContactIds]);
 
   // Export to CSV helper
   const exportToCSV = () => {
@@ -552,23 +607,19 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
 
   // Aggregate stats per contact
   const contactStats = useMemo(() => {
-    const stats: Record<string, { totalLeads: number; wonDeals: number; lostDeals: number }> = {};
-    
-    // Seed stats for all contacts
+    const stats = new Map<string, ContactStat>();
     contacts.forEach(c => {
-      stats[phoneKey(c.phoneNumber)] = { totalLeads: 0, wonDeals: 0, lostDeals: 0 };
+      const k = phoneKey(c.phoneNumber);
+      if (!stats.has(k)) stats.set(k, { totalLeads: 0, wonDeals: 0, lostDeals: 0 });
     });
-
     leads.forEach(l => {
-      const cleanPhone = phoneKey(l.phoneNumber);
-      if (!stats[cleanPhone]) {
-        stats[cleanPhone] = { totalLeads: 0, wonDeals: 0, lostDeals: 0 };
-      }
-      stats[cleanPhone].totalLeads++;
-      if (l.status === 'Won') stats[cleanPhone].wonDeals++;
-      if (l.status === 'Lost') stats[cleanPhone].lostDeals++;
+      const k = phoneKey(l.phoneNumber);
+      let st = stats.get(k);
+      if (!st) { st = { totalLeads: 0, wonDeals: 0, lostDeals: 0 }; stats.set(k, st); }
+      st.totalLeads++;
+      if (l.status === 'Won') st.wonDeals++;
+      if (l.status === 'Lost') st.lostDeals++;
     });
-
     return stats;
   }, [contacts, leads]);
 
@@ -813,13 +864,9 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
     onContactsUpdated();
   };
 
-  const handleSelectContact = (id: string) => {
-    if (selectedContactIds.includes(id)) {
-      setSelectedContactIds(selectedContactIds.filter(item => item !== id));
-    } else {
-      setSelectedContactIds([...selectedContactIds, id]);
-    }
-  };
+  const handleSelectContact = useCallback((id: string) => {
+    setSelectedContactIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+  }, []);
 
   const handleSelectAll = () => {
     if (selectedContactIds.length === filteredContacts.length) {
@@ -1002,49 +1049,16 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
               </thead>
               <tbody className="divide-y divide-brand-gray/10 text-xs font-medium text-brand-black">
                 {filteredContacts.length > 0 ? (
-                  filteredContacts.map((c) => {
-                    const stats = contactStats[phoneKey(c.phoneNumber)] || { totalLeads: 0, wonDeals: 0, lostDeals: 0 };
-                    const isSelected = selectedContactIds.includes(c.id);
-                    return (
-                      <tr key={c.id} className={`hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
-                        <td className="py-3.5 px-4">
-                          <button onClick={() => handleSelectContact(c.id)} className="focus:outline-none">
-                            {isSelected ? (
-                              <CheckSquare size={16} className="text-brand-red" />
-                            ) : (
-                              <Square size={16} className="text-brand-gray/60" />
-                            )}
-                          </button>
-                        </td>
-                        <td className="py-3.5 px-4 font-bold text-brand-black">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-[9px] text-brand-red bg-brand-red/10 px-1.5 py-0.5 rounded font-bold">{c.serialNumber || 'N/A'}</span>
-                            <span>{c.name}</span>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-3 font-mono text-brand-gray">{c.phoneNumber}</td>
-                        <td className="py-3.5 px-3 font-semibold text-brand-black">{c.company || 'Private Customer'}</td>
-                        <td className="py-3.5 px-3 text-center">
-                          <span className="bg-brand-red/10 text-brand-red px-2 py-0.5 rounded-full font-mono text-[10px] font-bold">
-                            {stats.totalLeads} Leads
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-3 text-center text-[10px] font-mono">
-                          <span className="text-emerald-700 font-bold">{stats.wonDeals} W</span>
-                          <span className="mx-1 text-brand-gray">/</span>
-                          <span className="text-rose-600 font-bold">{stats.lostDeals} L</span>
-                        </td>
-                        <td className="py-3.5 px-4 text-right">
-                          <button
-                            onClick={() => setSelectedContact(c)}
-                            className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-3 py-1 rounded-lg font-bold"
-                          >
-                            Details
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
+                  pageRows.map((c) => (
+                    <ContactRow
+                      key={c.id}
+                      c={c}
+                      stats={contactStats.get(phoneKey(c.phoneNumber)) || NO_STAT}
+                      isSelected={selectedSet.has(c.id)}
+                      onToggle={handleSelectContact}
+                      onOpen={setSelectedContact}
+                    />
+                  ))
                 ) : (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-brand-gray">
@@ -1055,6 +1069,7 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
               </tbody>
             </table>
           </div>
+          <PagerBar total={filteredContacts.length} page={page} pageSize={pageSize} onPage={setPage} onSize={setPageSize} shown={allShown} onMore={more} />
         </div>
 
         {/* Selected Contact details card */}

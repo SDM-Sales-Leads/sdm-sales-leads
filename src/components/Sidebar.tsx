@@ -1,3 +1,4 @@
+import { crmService } from './crm/crmService';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../services/AuthContext';
 import { Logo } from '../constants';
@@ -157,12 +158,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
     const existingIds = new Set(currentNotifs.map((n: any) => n.id));
     const newNotifs: any[] = [];
 
-    // Check leads for new updates/assignments
-    let leads: any[] = [];
-    try {
-      const savedLeads = localStorage.getItem('crm_leads');
-      if (savedLeads) leads = JSON.parse(savedLeads);
-    } catch (e) {}
+    // Only what changed since the last check can produce a notification (the first check starts "now", so the
+    // history that came with the migration never floods the bell). The leads are read from memory, not storage.
+    const sinceKey = `crm_notif_since_${user.id}`;
+    const since = localStorage.getItem(sinceKey) || new Date().toISOString();
+    localStorage.setItem(sinceKey, new Date().toISOString());
+    const leads: any[] = crmService.getLeads().filter((l: any) => (l.lastUpdated || '') > since);
 
     leads.forEach((lead: any) => {
       if (!isLeadRelevantToUser(lead, user)) return;
@@ -227,7 +228,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (newNotifs.length > 0) {
       localStorage.setItem(storageKey, JSON.stringify(finalNotifs));
     }
-    setNotifications(finalNotifs);
+    setNotifications(prev => (prev.length === finalNotifs.length && prev[0]?.id === finalNotifs[0]?.id && prev.every((p, i) => p.read === finalNotifs[i].read)) ? prev : finalNotifs);
     setHasNewNotifications(finalNotifs.some((n: any) => !n.read));
   };
 
@@ -240,13 +241,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         
         // If there's a reference lead, check if it is relevant to the current user
         if (notif.refId) {
-          let leadsList: any[] = [];
-          try {
-            const savedLeads = localStorage.getItem('crm_leads');
-            if (savedLeads) leadsList = JSON.parse(savedLeads);
-          } catch (err) {}
-          
-          const lead = leadsList.find((l: any) => l.id === notif.refId);
+          const lead = crmService.getLeads().find((l: any) => l.id === notif.refId);
           if (lead && !isLeadRelevantToUser(lead, user)) {
             return; // Not relevant, ignore!
           }
@@ -263,14 +258,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
     window.addEventListener('crm-notification', handleNotification);
     
-    // Periodically reconcile notifications (e.g., every 5 seconds)
-    const timer = setInterval(() => {
-      loadUserNotifications();
-    }, 5000);
+    // No timer: notifications are re-checked only when the lead data really changed (debounced)
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onData = () => { if (t) clearTimeout(t); t = setTimeout(loadUserNotifications, 1000); };
+    window.addEventListener('crm-data-changed', onData);
 
     return () => {
       window.removeEventListener('crm-notification', handleNotification);
-      clearInterval(timer);
+      window.removeEventListener('crm-data-changed', onData);
+      if (t) clearTimeout(t);
     };
   }, [user]);
 

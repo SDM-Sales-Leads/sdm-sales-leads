@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { Company, Lead, Contact } from './types';
 import { crmService } from './crmService';
 import { csvCell, safeHttpUrl } from '../../lib/plots';
@@ -22,6 +22,57 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { PagerBar } from './LeadListParts';
+import { useDebounced, makeSearchIndex, usePagedList } from './usePagedList';
+
+const nameKey = (v?: string) => (v || '').trim().toLowerCase();
+const companyText = makeSearchIndex<Company>(co => `${co.name || ''} ${co.industry || ''} ${co.city || ''} ${co.assignedAccountManager || ''}`);
+interface CompanyStat { totalLeads: number; opportunities: number }
+const NO_STAT: CompanyStat = { totalLeads: 0, opportunities: 0 };
+const NON_OPP = new Set(['New', 'Assigned', 'Lost', 'Duplicate']);
+
+interface CompanyRowProps {
+  co: Company;
+  stats: CompanyStat;
+  isSelected: boolean;
+  onToggle: (id: string) => void;
+  onOpen: (co: Company) => void;
+}
+const CompanyRow = React.memo<CompanyRowProps>(({ co, stats, isSelected, onToggle, onOpen }) => (
+  <tr className={`hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
+    <td className="py-3.5 px-4">
+      <button aria-label={`Select ${co.name}`} onClick={() => onToggle(co.id)} className="focus:outline-none">
+        {isSelected ? (
+          <CheckSquare size={16} className="text-brand-red" />
+        ) : (
+          <Square size={16} className="text-brand-gray/60" />
+        )}
+      </button>
+    </td>
+    <td className="py-3.5 px-4 font-bold text-brand-black">{co.name}</td>
+    <td className="py-3.5 px-3 text-brand-gray font-semibold">{co.industry || 'N/A'}</td>
+    <td className="py-3.5 px-3 font-mono text-brand-gray">{co.commercialRegistration || 'Pending CR'}</td>
+    <td className="py-3.5 px-3 text-center">
+      <span className="bg-brand-red/10 text-brand-red px-2.5 py-0.5 rounded-full font-mono text-[10px] font-bold">
+        {stats.totalLeads} Leads
+      </span>
+    </td>
+    <td className="py-3.5 px-3 text-center">
+      <span className="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-bold">
+        {stats.opportunities} Opps
+      </span>
+    </td>
+    <td className="py-3.5 px-4 text-right">
+      <button
+        onClick={() => onOpen(co)}
+        className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-3 py-1 rounded-lg font-bold"
+      >
+        Details
+      </button>
+    </td>
+  </tr>
+));
+CompanyRow.displayName = 'CompanyRow';
 
 interface CrmCompaniesProps {
   companies: Company[];
@@ -84,12 +135,13 @@ export const CrmCompanies: React.FC<CrmCompaniesProps> = ({
   }, []);
 
   // Filter Companies
+  const debouncedSearch = useDebounced(searchTerm, 250);
   const filteredCompanies = useMemo(() => {
-    return companies.filter(co => {
-      const text = `${co.name || ''} ${co.industry || ''} ${co.city || ''} ${co.assignedAccountManager || ''}`.toLowerCase();
-      return text.includes(searchTerm.toLowerCase());
-    });
-  }, [companies, searchTerm]);
+    const q = debouncedSearch.toLowerCase();
+    return q ? companies.filter(co => companyText(co).includes(q)) : companies;
+  }, [companies, debouncedSearch]);
+  const { pageRows, page, pageSize, setPage, setPageSize, allShown, more } = usePagedList(filteredCompanies, 'sid_companies_page_size', debouncedSearch);
+  const selectedSet = useMemo(() => new Set(selectedCompanyIds), [selectedCompanyIds]);
 
   // Export to CSV helper
   const exportToCSV = () => {
@@ -125,26 +177,20 @@ export const CrmCompanies: React.FC<CrmCompaniesProps> = ({
 
   // Compute stats per company
   const companyStats = useMemo(() => {
-    const stats: Record<string, { totalLeads: number; opportunities: number }> = {};
-    
+    const stats = new Map<string, CompanyStat>();
     companies.forEach(co => {
-      stats[(co.name || '').trim().toLowerCase()] = { totalLeads: 0, opportunities: 0 };
+      const k = nameKey(co.name);
+      if (!stats.has(k)) stats.set(k, { totalLeads: 0, opportunities: 0 });
     });
-
     leads.forEach(l => {
-      if (l.companyName) {
-        const key = l.companyName.trim().toLowerCase();
-        if (!stats[key]) {
-          stats[key] = { totalLeads: 0, opportunities: 0 };
-        }
-        stats[key].totalLeads++;
-        // Lead counts as opportunity if it transitioned past contacted/follow up stage
-        if (!['New', 'Assigned', 'Lost', 'Duplicate'].includes(l.status)) {
-          stats[key].opportunities++;
-        }
-      }
+      if (!l.companyName) return;
+      const k = nameKey(l.companyName);
+      let st = stats.get(k);
+      if (!st) { st = { totalLeads: 0, opportunities: 0 }; stats.set(k, st); }
+      st.totalLeads++;
+      // Lead counts as opportunity if it transitioned past contacted/follow up stage
+      if (!NON_OPP.has(l.status)) st.opportunities++;
     });
-
     return stats;
   }, [companies, leads]);
 
@@ -215,13 +261,9 @@ export const CrmCompanies: React.FC<CrmCompaniesProps> = ({
     onCompaniesUpdated();
   };
 
-  const handleSelectCompany = (id: string) => {
-    if (selectedCompanyIds.includes(id)) {
-      setSelectedCompanyIds(selectedCompanyIds.filter(item => item !== id));
-    } else {
-      setSelectedCompanyIds([...selectedCompanyIds, id]);
-    }
-  };
+  const handleSelectCompany = useCallback((id: string) => {
+    setSelectedCompanyIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+  }, []);
 
   const handleSelectAll = () => {
     if (selectedCompanyIds.length === filteredCompanies.length) {
@@ -389,44 +431,16 @@ export const CrmCompanies: React.FC<CrmCompaniesProps> = ({
               </thead>
               <tbody className="divide-y divide-brand-gray/10 text-xs font-medium text-brand-black">
                 {filteredCompanies.length > 0 ? (
-                  filteredCompanies.map((co) => {
-                    const stats = companyStats[(co.name || '').trim().toLowerCase()] || { totalLeads: 0, opportunities: 0 };
-                    const isSelected = selectedCompanyIds.includes(co.id);
-                    return (
-                      <tr key={co.id} className={`hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
-                        <td className="py-3.5 px-4">
-                          <button aria-label={`Select ${co.name}`} onClick={() => handleSelectCompany(co.id)} className="focus:outline-none">
-                            {isSelected ? (
-                              <CheckSquare size={16} className="text-brand-red" />
-                            ) : (
-                              <Square size={16} className="text-brand-gray/60" />
-                            )}
-                          </button>
-                        </td>
-                        <td className="py-3.5 px-4 font-bold text-brand-black">{co.name}</td>
-                        <td className="py-3.5 px-3 text-brand-gray font-semibold">{co.industry || 'N/A'}</td>
-                        <td className="py-3.5 px-3 font-mono text-brand-gray">{co.commercialRegistration || 'Pending CR'}</td>
-                        <td className="py-3.5 px-3 text-center">
-                          <span className="bg-brand-red/10 text-brand-red px-2.5 py-0.5 rounded-full font-mono text-[10px] font-bold">
-                            {stats.totalLeads} Leads
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-3 text-center">
-                          <span className="bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full font-mono text-[10px] font-bold">
-                            {stats.opportunities} Opps
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-4 text-right">
-                          <button
-                            onClick={() => setSelectedCompany(co)}
-                            className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-3 py-1 rounded-lg font-bold"
-                          >
-                            Details
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
+                  pageRows.map((co) => (
+                    <CompanyRow
+                      key={co.id}
+                      co={co}
+                      stats={companyStats.get(nameKey(co.name)) || NO_STAT}
+                      isSelected={selectedSet.has(co.id)}
+                      onToggle={handleSelectCompany}
+                      onOpen={setSelectedCompany}
+                    />
+                  ))
                 ) : (
                   <tr>
                     <td colSpan={7} className="py-8 text-center text-brand-gray">
@@ -437,6 +451,7 @@ export const CrmCompanies: React.FC<CrmCompaniesProps> = ({
               </tbody>
             </table>
           </div>
+          <PagerBar total={filteredCompanies.length} page={page} pageSize={pageSize} onPage={setPage} onSize={setPageSize} shown={allShown} onMore={more} />
         </div>
 
         {/* Selected company pane */}

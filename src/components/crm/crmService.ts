@@ -82,7 +82,17 @@ function persistSoon(kind: Kind) {
     } catch { /* quota: the memory copy is used */ }
   }, 1500);
 }
+// A version number per list, bumped only when the list really changed. Screens compare it before re-rendering,
+// so a refresh that brought nothing new costs no re-render at all.
+const ver: Record<Kind, number> = { leads: 0, contacts: 0, companies: 0, tasks: 0, activities: 0, 'email-logs': 0 };
+function sameRows(a: any[] | undefined, b: any[]) {
+  if (a === b) return true;
+  if (!a || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 function write(kind: Kind, rows: any[]) {
+  if (!sameRows(memory[kind], rows)) ver[kind]++;
   memory[kind] = rows;
   if (kind === 'leads') dupIndex = null;
   persistSoon(kind);
@@ -99,7 +109,7 @@ const lastFull: Partial<Record<Kind, number>> = {};
 const inflight: Partial<Record<Kind, Promise<boolean | null>>> = {};
 const DELTA_KINDS: Kind[] = ['leads', 'contacts', 'companies', 'tasks', 'activities'];
 const OVERLAP_MS = 15_000;          // re-read the last seconds: merging is idempotent, missing a row is not
-const FULL_EVERY_MS = 15 * 60_000;  // safety net against a missed delete
+const FULL_EVERY_MS = 4 * 60 * 60_000;  // safety net only: deletes already travel in the delta (soft delete bumps updated_at)
 
 const cursorFrom = (iso: string | null | undefined) => {
   const t = iso ? Date.parse(iso) : NaN;
@@ -243,7 +253,7 @@ function takeId(kind: 'lead' | 'contact' | 'company'): string {
   return `${p}-T${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
 
-const saved = (kind: Kind) => (rows: any[]) => { write(kind, rows); void queue(kind); };
+const saved = (kind: Kind) => (rows: any[]) => { write(kind, rows); ver[kind]++; void queue(kind); };
 
 export const crmService = {
   /**
@@ -278,6 +288,7 @@ export const crmService = {
       } catch { ok = false; }
     }
     refill('lead'); refill('contact'); refill('company');
+    lastDeltaAt = Date.now();
     changed();
     return { ok };
   },
@@ -286,11 +297,11 @@ export const crmService = {
    * Cheap refresh: GET /api/crm/<kind>?since=... for every list, merged into memory (optimistic-lock _rev kept).
    * Fires 'crm-data-changed' only when something changed. Safe to call often (throttled to once per 5 s).
    */
-  refreshDelta: async (): Promise<{ changed: boolean }> => {
-    if (Date.now() - lastDeltaAt < 5000) return { changed: false };
+  refreshDelta: async (opts: { force?: boolean; kinds?: Kind[] } = {}): Promise<{ changed: boolean }> => {
+    if (!opts.force && Date.now() - lastDeltaAt < 5000) return { changed: false };
     lastDeltaAt = Date.now();
     let any = false;
-    await Promise.all(DELTA_KINDS.map(async (k) => {
+    await Promise.all((opts.kinds || DELTA_KINDS).map(async (k) => {
       if (pending[k] > 0) return;
       const d = await pullDelta(k);
       if (d === true) any = true;
@@ -301,15 +312,21 @@ export const crmService = {
     return { changed: any };
   },
 
+  /** changes whenever a list really changed (cheap to compare): screens skip re-rendering when it is the same */
+  versionKey: (): string => `${ver.leads}.${ver.contacts}.${ver.companies}.${ver['email-logs']}.${ver.tasks}.${ver.activities}`,
+
   /**
    * Polls refreshDelta every ~90 s while the tab is visible, and when the window regains focus / becomes visible.
    * Returns a stop function. Reference counted: call it from every screen that shows leads.
    */
-  startAutoRefresh: (intervalMs = 90_000): (() => void) => {
+  startAutoRefresh: (intervalMs = 120_000): (() => void) => {
     autoUsers++;
     if (autoUsers === 1) {
-      autoTimer = setInterval(() => { if (document.visibilityState === 'visible') void crmService.refreshDelta(); }, intervalMs);
-      const onWake = () => { if (document.visibilityState === 'visible') void crmService.refreshDelta(); };
+      // only the lists that change all day (leads, tasks, activities), only while the tab is visible
+      const hot: Kind[] = ['leads', 'tasks', 'activities'];
+      autoTimer = setInterval(() => { if (document.visibilityState === 'visible') void crmService.refreshDelta({ kinds: hot }); }, intervalMs);
+      // coming back to the tab: refresh only if the last refresh is older than a minute
+      const onWake = () => { if (document.visibilityState === 'visible' && Date.now() - lastDeltaAt > 60_000) void crmService.refreshDelta({ kinds: hot }); };
       window.addEventListener('focus', onWake);
       document.addEventListener('visibilitychange', onWake);
       autoOff = () => { window.removeEventListener('focus', onWake); document.removeEventListener('visibilitychange', onWake); };

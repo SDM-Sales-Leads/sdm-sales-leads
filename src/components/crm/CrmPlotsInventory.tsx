@@ -1,3 +1,4 @@
+import { getPlotsCsv, dropPlotsCache } from '../../lib/plotsCache';
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -110,12 +111,7 @@ export const CrmPlotsInventory: React.FC = () => {
   const fetchCsvData = async (ignoreLoadingState = false) => {
     try {
       if (!ignoreLoadingState) setIsLoading(true);
-      const sheetUrl = `/api/plots-csv?t=${Date.now()}`;
-      const response = await fetch(sheetUrl);
-      if (!response.ok) {
-        throw new Error("Could not connect to online spreadsheet proxy");
-      }
-      const csvText = await response.text();
+      const csvText = await getPlotsCsv();
       const parsed = parseCSV(csvText);
       
       if (parsed.length === 0) {
@@ -177,6 +173,7 @@ export const CrmPlotsInventory: React.FC = () => {
       const data = await res.json().catch(() => ({} as any));
       setLastSyncedTime(data.lastSynced || new Date().toISOString());
       setSyncStatusMsg({ type: 'success', text: 'Google Sheet synchronized successfully!' });
+      dropPlotsCache();
       await fetchCsvData(true);
     } catch (e: any) {
       console.error("Force sync failed:", e);

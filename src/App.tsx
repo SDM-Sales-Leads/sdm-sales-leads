@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { AuthProvider, useAuth } from './services/AuthContext';
 import { ThemeProvider, useTheme } from './services/ThemeContext';
 import { Toaster } from 'sonner';
@@ -7,17 +7,17 @@ import { ChangePassword } from './components/ChangePassword';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './components/Dashboard';
 import { TicketList } from './components/TicketList';
-import { TicketDetail } from './components/TicketDetail';
-import { TicketForm } from './components/TicketForm';
-import { AdminPanel } from './components/AdminPanel';
-import { KnowledgeBase } from './components/KnowledgeBase';
-import { SystemHealth } from './components/SystemHealth';
-import { WorkflowSLAAlignment } from './components/WorkflowSLAAlignment';
-import { SalesCrmModule } from './components/crm/SalesCrmModule';
+const TicketDetail = lazy(() => import('./components/TicketDetail').then(m => ({ default: m.TicketDetail })));
+const TicketForm = lazy(() => import('./components/TicketForm').then(m => ({ default: m.TicketForm })));
+const AdminPanel = lazy(() => import('./components/AdminPanel').then(m => ({ default: m.AdminPanel })));
+const KnowledgeBase = lazy(() => import('./components/KnowledgeBase').then(m => ({ default: m.KnowledgeBase })));
+const SystemHealth = lazy(() => import('./components/SystemHealth').then(m => ({ default: m.SystemHealth })));
+const WorkflowSLAAlignment = lazy(() => import('./components/WorkflowSLAAlignment').then(m => ({ default: m.WorkflowSLAAlignment })));
+const SalesCrmModule = lazy(() => import('./components/crm/SalesCrmModule').then(m => ({ default: m.SalesCrmModule })));
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { ticketService } from './services/ticketService';
 import { Ticket as TicketType } from './types';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 
 import { Menu } from 'lucide-react';
 import { Logo } from './constants';
@@ -40,7 +40,11 @@ const AppContent: React.FC = () => {
 
       // Cost-efficient sync: Refresh when user returns to the tab
       // This is "zero cost" when the app is in the background
+      let lastTicketLoad = Date.now();
       const handleFocus = () => {
+        // coming back to the tab: reload only if the data is more than 2 minutes old
+        if (Date.now() - lastTicketLoad < 120_000) return;
+        lastTicketLoad = Date.now();
         loadTickets();
       };
       
@@ -158,13 +162,13 @@ const AppContent: React.FC = () => {
           </header>
 
           <main className="flex-1 p-4 md:p-8 overflow-y-auto">
-            <AnimatePresence mode="wait">
+            {/* no exit animation and no waiting: the new page appears at once (a 100 ms fade only) */}
+            <Suspense fallback={<div className="p-8 text-sm text-brand-gray">Loading…</div>}>
               <motion.div
                 key={selectedTicket ? `detail-${selectedTicket.id}` : activeTab}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.2 }}
+                initial={{ opacity: 0.4 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.1 }}
               >
                 {selectedTicket ? (
                   <TicketDetail 
@@ -195,7 +199,7 @@ const AppContent: React.FC = () => {
                   </>
                 )}
               </motion.div>
-            </AnimatePresence>
+            </Suspense>
           </main>
         </div>
       </div>

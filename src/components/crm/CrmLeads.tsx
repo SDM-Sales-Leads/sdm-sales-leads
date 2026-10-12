@@ -8,7 +8,7 @@ import {
 } from './leadConfig';
 import { KanbanKey, LeadAuth, addDaysISO, withSideEffects, kanbanBucket, neglectInfo, prioKey, priorityClass, statusClass, todayISO } from './leadRules';
 import { fmtSize, formatLeadDateTime, getSlaStatus, isSlaAtRisk, localISO } from './leadView';
-import { KanbanCard, LeadRow, PAGE_SIZES, PageSize, PagerBar } from './LeadListParts';
+import { KanbanCard, LeadRow, PAGE_SIZES, PageSize, PagerBar, ALL_CHUNK } from './LeadListParts';
 import { LeadEditor, NATIONALITIES } from './LeadEditor';
 import { LeadAuditHistory } from './LeadAuditHistory';
 import { LeadScoreChip, sourceWinRates } from './LeadScoreChip';
@@ -16,6 +16,7 @@ import { WA_LANGS, WaLang, WA_TEMPLATES, getWaLang, setWaLang, suggestTemplate, 
 import DOMPurify from 'dompurify';
 import { useAuth } from '../../services/AuthContext';
 import { parseCSV } from '../../lib/plots';
+import { getPlotsCsv } from '../../lib/plotsCache';
 import { 
   List, 
   Kanban, 
@@ -148,11 +149,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const fetchPlots = async (retryCount = 0) => {
       try {
-        const response = await fetch(`/api/plots-csv?t=${Date.now()}`);
-        if (!response.ok) {
-           throw new Error(`HTTP ${response.status} - ${response.statusText}`);
-        }
-        const csvText = await response.text();
+        const csvText = await getPlotsCsv();
         const parsed = parseCSV(csvText);
         const mapped: PlotRecord[] = parsed.map((row: any, index: number) => {
           const areaSqM = parseFloat((row['Area'] || '0').replace(/,/g, '')) || 0;
@@ -183,9 +180,10 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
         }
       }
     };
-    fetchPlots();
+    // the plots sheet is only needed for the recommendations inside an open lead: load it then, not on every visit
+    if (selectedLead && plots.length === 0) fetchPlots();
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
-  }, []);
+  }, [selectedLead !== null]);
 
   // Keep the open lead panel in sync with the latest data (it is a copy; other edits would otherwise be shown stale)
   useEffect(() => {
@@ -617,9 +615,12 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   // current page of the filtered list (All = everything)
   const pageCount = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filteredLeads.length / pageSize));
   const safePage = Math.min(page, pageCount - 1);
+  // "All" draws 250 rows and then more on request, so even 4,000 rows never freeze the page
+  const [allShown, setAllShown] = useState(ALL_CHUNK);
+  useEffect(() => { setAllShown(ALL_CHUNK); }, [filteredLeads, pageSize]);
   const pageLeads = useMemo(
-    () => (pageSize === 0 ? filteredLeads : filteredLeads.slice(safePage * pageSize, (safePage + 1) * pageSize)),
-    [filteredLeads, pageSize, safePage],
+    () => (pageSize === 0 ? filteredLeads.slice(0, allShown) : filteredLeads.slice(safePage * pageSize, (safePage + 1) * pageSize)),
+    [filteredLeads, pageSize, safePage, allShown],
   );
   const pageAllSelected = pageLeads.length > 0 && pageLeads.every(l => selectedSet.has(l.id));
   const allFilteredSelected = filteredLeads.length > 0 && filteredLeads.length === selectedLeadIds.length && filteredLeads.every(l => selectedSet.has(l.id));
@@ -1814,7 +1815,7 @@ ${user.name || ''}`);
               </tbody>
             </table>
           </div>
-          <PagerBar total={filteredLeads.length} page={safePage} pageSize={pageSize} onPage={setPage} onSize={setPageSize} />
+          <PagerBar total={filteredLeads.length} page={safePage} pageSize={pageSize} onPage={setPage} onSize={setPageSize} shown={allShown} onMore={() => setAllShown((n) => n + ALL_CHUNK)} />
         </div>
       )}
 

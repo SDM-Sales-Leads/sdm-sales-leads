@@ -33,11 +33,8 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // look & feel changes only when an administrator saves it (the page then updates itself): no refresh on focus
     loadSettings();
-    // Refresh settings when window regains focus (zero cost while idle)
-    const handleFocus = () => loadSettings();
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
   }, []);
 
   const isLoadingSettings = React.useRef(false);

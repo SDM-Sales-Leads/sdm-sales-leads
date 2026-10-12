@@ -152,10 +152,8 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
             }
           })
           .catch(err => {
+             // no automatic retries: every attempt is a call to the mailbox server. The user can refresh by hand.
              console.error("Failed to fetch webmail:", err.message || err);
-             if (retryCount < 2) {
-               setTimeout(() => fetchWebmail(retryCount + 1), 2000);
-             }
           });
       };
       fetchWebmail();

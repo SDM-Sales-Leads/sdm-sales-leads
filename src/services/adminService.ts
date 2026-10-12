@@ -8,6 +8,10 @@ async function fail(res: Response, fallback: string): Promise<never> {
   throw new Error(msg);
 }
 
+let usersCache: { at: number; rows: any[] } | null = null;
+let usersInflight: Promise<any[]> | null = null;
+export const dropUsersCache = () => { usersCache = null; };
+
 export const adminService = {
   getCategories: async (): Promise<Category[]> => {
     const res = await fetchWithTimeout('/api/categories', {}, 10000);
@@ -47,13 +51,22 @@ export const adminService = {
     if (!res.ok) await fail(res, 'Failed to update SLA');
   },
 
-  getUsers: async () => {
-    const res = await fetchWithTimeout('/api/users', {}, 10000);
-    if (!res.ok) await fail(res, 'Failed to fetch users');
-    return await res.json();
+  /** The user list changes rarely: cached for 5 minutes and shared by every screen (one request, not one per page) */
+  getUsers: async (opts: { fresh?: boolean } = {}) => {
+    if (!opts.fresh && usersCache && Date.now() - usersCache.at < 5 * 60_000) return usersCache.rows;
+    if (!opts.fresh && usersInflight) return usersInflight;
+    usersInflight = (async () => {
+      const res = await fetchWithTimeout('/api/users', {}, 10000);
+      if (!res.ok) await fail(res, 'Failed to fetch users');
+      const rows = await res.json();
+      usersCache = { at: Date.now(), rows };
+      return rows;
+    })().finally(() => { usersInflight = null; });
+    return usersInflight;
   },
 
   addUser: async (userData: any) => {
+    dropUsersCache();
     const res = await fetchWithTimeout('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,6 +77,7 @@ export const adminService = {
   },
 
   updateUser: async (id: string | number, userData: any) => {
+    dropUsersCache();
     const res = await fetchWithTimeout(`/api/users/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -74,6 +88,7 @@ export const adminService = {
   },
 
   deleteUser: async (id: string | number, userId?: string, userName?: string) => {
+    dropUsersCache();
     const res = await fetchWithTimeout(`/api/users/${id}`, { method: 'DELETE' }, 10000);
     if (!res.ok) await fail(res, 'Failed to delete user');
   },

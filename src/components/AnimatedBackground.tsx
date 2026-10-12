@@ -36,7 +36,10 @@ export const AnimatedBackground: React.FC = () => {
       mouseY.set(e.clientY);
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
+    // Mouse parallax moved large blurred layers on every mouse move (costly on big screens). Kept only when the
+    // person has not asked for reduced motion AND the screen is small enough for it to be cheap.
+    const cheap = !window.matchMedia('(prefers-reduced-motion: reduce)').matches && window.innerWidth * window.innerHeight < 1_400_000;
+    if (cheap) window.addEventListener('mousemove', handleMouseMove);
     // Trigger initial position
     if (typeof window !== 'undefined') {
       mouseX.set(window.innerWidth / 2);

@@ -71,7 +71,7 @@ export const AdminPanel: React.FC = () => {
     
     try {
       const [uRes, cRes, sRes, eRes, nRes, pRes] = await Promise.allSettled([
-        adminService.getUsers(),
+        adminService.getUsers({ fresh: true }),
         adminService.getCategories(),
         adminService.getSLA(),
         adminService.getEmailConfig(),

@@ -1,28 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useAuth } from '../../services/AuthContext';
 import { crmService } from './crmService';
 import { adminService } from '../../services/adminService';
 import { Lead, Contact, Company, EmailImportLog } from './types';
 import { toast } from 'sonner';
-import { CrmDashboard } from './CrmDashboard';
-import { CrmMyDay } from './CrmMyDay';
-import { CrmLeads } from './CrmLeads';
-import { CrmContacts } from './CrmContacts';
-import { CrmCompanies } from './CrmCompanies';
-import { CrmLeadQueue } from './CrmLeadQueue';
-import { CrmSalesApprovals } from './CrmSalesApprovals';
-import { CrmAssignmentRules } from './CrmAssignmentRules';
-import { CrmActivities } from './CrmActivities';
-import { CrmReports } from './CrmReports';
-import { CrmImportExport } from './CrmImportExport';
-import { CrmPlotsInventory } from './CrmPlotsInventory';
-import { CrmFinance } from './CrmFinance';
-import { CrmContracts } from './CrmContracts';
-import { CrmTargets } from './CrmTargets';
-import { CrmExternalSales } from './CrmExternalSales';
-import { CrmAudit } from './CrmAudit';
-import { CrmOffers } from './CrmOffers';
-import { CrmDuplicates } from './CrmDuplicates';
+const CrmDashboard = lazy(() => import('./CrmDashboard').then(m => ({ default: m.CrmDashboard })));
+const CrmMyDay = lazy(() => import('./CrmMyDay').then(m => ({ default: m.CrmMyDay })));
+const CrmLeads = lazy(() => import('./CrmLeads').then(m => ({ default: m.CrmLeads })));
+const CrmContacts = lazy(() => import('./CrmContacts').then(m => ({ default: m.CrmContacts })));
+const CrmCompanies = lazy(() => import('./CrmCompanies').then(m => ({ default: m.CrmCompanies })));
+const CrmLeadQueue = lazy(() => import('./CrmLeadQueue').then(m => ({ default: m.CrmLeadQueue })));
+const CrmSalesApprovals = lazy(() => import('./CrmSalesApprovals').then(m => ({ default: m.CrmSalesApprovals })));
+const CrmAssignmentRules = lazy(() => import('./CrmAssignmentRules').then(m => ({ default: m.CrmAssignmentRules })));
+const CrmActivities = lazy(() => import('./CrmActivities').then(m => ({ default: m.CrmActivities })));
+const CrmReports = lazy(() => import('./CrmReports').then(m => ({ default: m.CrmReports })));
+const CrmImportExport = lazy(() => import('./CrmImportExport').then(m => ({ default: m.CrmImportExport })));
+const CrmPlotsInventory = lazy(() => import('./CrmPlotsInventory').then(m => ({ default: m.CrmPlotsInventory })));
+const CrmFinance = lazy(() => import('./CrmFinance').then(m => ({ default: m.CrmFinance })));
+const CrmContracts = lazy(() => import('./CrmContracts').then(m => ({ default: m.CrmContracts })));
+const CrmTargets = lazy(() => import('./CrmTargets').then(m => ({ default: m.CrmTargets })));
+const CrmExternalSales = lazy(() => import('./CrmExternalSales').then(m => ({ default: m.CrmExternalSales })));
+const CrmAudit = lazy(() => import('./CrmAudit').then(m => ({ default: m.CrmAudit })));
+const CrmOffers = lazy(() => import('./CrmOffers').then(m => ({ default: m.CrmOffers })));
+const CrmDuplicates = lazy(() => import('./CrmDuplicates').then(m => ({ default: m.CrmDuplicates })));
 import { 
   TrendingUp, 
   Users, 
@@ -60,76 +60,26 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
   const [logs, setLogs] = useState<EmailImportLog[]>([]);
-  const lastNetworkFetchRef = React.useRef<number>(0);
   const loadErrorShown = React.useRef(false);
+  const seenVersion = React.useRef('');
+  const knownIds = React.useRef<Set<string> | null>(null);
 
-  // Load datasets on mount or local update
-  const loadCrmData = async (forceNetworkFetch = false) => {
-    // 1. Instant UI Load from Local Cache
-    setLeads(crmService.getLeads());
+  // Show what the service holds, but only re-render when a list really changed (version compare is O(1))
+  const pushState = (announceNew = false) => {
+    const v = crmService.versionKey();
+    if (v === seenVersion.current) return;
+    seenVersion.current = v;
+    const newLeads = crmService.getLeads();
+    setLeads(newLeads);
     setContacts(crmService.getContacts());
     setCompanies(crmService.getCompanies());
     setLogs(crmService.getEmailLogs());
-
-    try {
-      const allUsers = await adminService.getUsers();
-      // Filter users who belong to the "Sales Team" or other sales roles
-      const salesTeamUsers = allUsers.filter((u: any) => 
-        u.role === 'Sales Team' || 
-        u.role === 'Sales Rep' || 
-        u.role === 'Sales Team Leader' || 
-        u.role === 'Sales Operation'
-      );
-      
-      // Map to crm salesperson objects
-      const crmSalesPeople = salesTeamUsers.map((u: any) => ({
-        id: String(u.id),
-        name: u.name,
-        email: u.email || '',
-        role: u.role || 'Sales Rep',
-        activeLeads: u.activeLeads || 0,
-        totalLeads: u.totalLeads || 0,
-        leave: u.leave || false,
-        active: u.active !== undefined ? u.active : true,
-        teamLeaderId: u.teamLeaderId ? String(u.teamLeaderId) : undefined
-      }));
-
-      // Store in localStorage so crmService can access it synchronously
-      localStorage.setItem('crm_sales_people', JSON.stringify(crmSalesPeople));
-    } catch (err) {
-      console.error('Failed to sync sales team users from admin panel:', err);
-    }
-
-    const timeSinceLastFetch = Date.now() - lastNetworkFetchRef.current;
-    // Throttle network fetches to once every 20 seconds unless forceNetworkFetch is true
-    if (forceNetworkFetch || timeSinceLastFetch > 20000) {
-      lastNetworkFetchRef.current = Date.now();
-      const oldIds = new Set(crmService.getLeads().map(l => l.id));
-      const { ok } = await crmService.loadAll();
-      if (!ok) {
-        if (!loadErrorShown.current) { loadErrorShown.current = true; toast.error('Could not load the latest CRM data. Showing what was loaded before.'); }
-      } else {
-        loadErrorShown.current = false;
-      }
-
-      const newLeads = crmService.getLeads();
-      setLeads(newLeads);
-      setContacts(crmService.getContacts());
-      setCompanies(crmService.getCompanies());
-      setLogs(crmService.getEmailLogs());
-
-      const added = oldIds.size > 0 ? newLeads.filter(l => !oldIds.has(l.id)) : [];
+    if (announceNew && knownIds.current && knownIds.current.size > 0) {
+      const added = newLeads.filter(l => !knownIds.current!.has(l.id));
       if (added.length > 0) {
         const latestNewLeadId = added[0].id;
         window.dispatchEvent(new CustomEvent('crm-notification', {
-          detail: {
-            id: Date.now().toString(),
-            message: `A new sales lead has been created: ${latestNewLeadId}`,
-            type: 'lead',
-            refId: latestNewLeadId,
-            timestamp: new Date().toISOString(),
-            read: false
-          }
+          detail: { id: Date.now().toString(), message: `A new sales lead has been created: ${latestNewLeadId}`, type: 'lead', refId: latestNewLeadId, timestamp: new Date().toISOString(), read: false }
         }));
         toast.success(`A new sales lead has been created: ${latestNewLeadId}`, {
           action: { label: 'View Lead', onClick: () => { setActiveSubTab('leads'); } },
@@ -137,30 +87,50 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
         });
       }
     }
+    knownIds.current = new Set(newLeads.map(l => l.id));
+  };
+
+  // First load of this screen: the sales team (cached for minutes) and the lists (full once, then only changes)
+  const loadCrmData = async () => {
+    pushState();
+    try {
+      const allUsers = await adminService.getUsers();
+      const crmSalesPeople = allUsers
+        .filter((u: any) => u.role === 'Sales Team' || u.role === 'Sales Rep' || u.role === 'Sales Team Leader' || u.role === 'Sales Operation')
+        .map((u: any) => ({
+          id: String(u.id), name: u.name, email: u.email || '', role: u.role || 'Sales Rep',
+          activeLeads: u.activeLeads || 0, totalLeads: u.totalLeads || 0, leave: u.leave || false,
+          active: u.active !== undefined ? u.active : true, teamLeaderId: u.teamLeaderId ? String(u.teamLeaderId) : undefined,
+        }));
+      const text = JSON.stringify(crmSalesPeople);
+      if (localStorage.getItem('crm_sales_people') !== text) localStorage.setItem('crm_sales_people', text);
+    } catch (err) {
+      console.error('Failed to sync sales team users from admin panel:', err);
+    }
+    const { ok } = await crmService.loadAll();
+    if (!ok) {
+      if (!loadErrorShown.current) { loadErrorShown.current = true; toast.error('Could not load the latest CRM data. Showing what was loaded before.'); }
+    } else loadErrorShown.current = false;
+    knownIds.current = new Set(crmService.getLeads().map(l => l.id));
+    pushState();
+  };
+
+  // After the user saves something: the change is already in memory, so update the screen at once and ask the server
+  // for the leads that changed (one small query) instead of reloading everything.
+  const afterChange = () => {
+    pushState();
+    void crmService.refreshDelta({ force: true, kinds: ['leads'] }).then((r) => { if (r.changed) pushState(true); });
   };
 
   useEffect(() => {
-    loadCrmData(false);
-
-    // Refresh CRM data when window regains focus (zero cost while idle)
-    const handleFocus = () => loadCrmData(false);
-    // a save that was refused or reloaded from the server changed the cached lists
-    const handleChanged = () => {
-      setLeads(crmService.getLeads());
-      setContacts(crmService.getContacts());
-      setCompanies(crmService.getCompanies());
-      setLogs(crmService.getEmailLogs());
-    };
-    window.addEventListener('focus', handleFocus);
+    void loadCrmData();
+    // one shared, throttled refresh for the whole sales area (every 2 min while visible, and when returning after > 1 min)
+    const stopAuto = crmService.startAutoRefresh();
+    // a save that was refused or reloaded from the server changed the cached lists; new leads from the poll are announced
+    const handleChanged = () => pushState(true);
     window.addEventListener('crm-data-changed', handleChanged);
-    return () => {
-      window.removeEventListener('focus', handleFocus);
-      window.removeEventListener('crm-data-changed', handleChanged);
-    };
+    return () => { stopAuto(); window.removeEventListener('crm-data-changed', handleChanged); };
   }, []);
-
-  
-
 
   const subTabs = [
     { id: 'dashboard', label: 'Executive Board', icon: LayoutDashboard },
@@ -181,20 +151,21 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
 
       {/* Render active sub component */}
       <div className="min-h-[500px] transition-all">
+        <Suspense fallback={<div className="p-8 text-sm text-brand-gray">Loading…</div>}>
         {activeSubTab === 'dashboard' && (
           <CrmDashboard leads={leads} />
         )}
         {activeSubTab === 'my-day' && (
           <CrmMyDay 
             leads={leads} 
-            onLeadsUpdated={() => loadCrmData(true)} 
+            onLeadsUpdated={() => afterChange()} 
             setActiveSubTab={setActiveSubTab}
           />
         )}
         {activeSubTab === 'leads' && (
           <CrmLeads 
             leads={leads} 
-            onLeadsUpdated={() => loadCrmData(true)} 
+            onLeadsUpdated={() => afterChange()} 
             currentRole={currentRole} 
             setActiveSubTab={setActiveSubTab}
           />
@@ -203,7 +174,7 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
           <CrmContacts 
             contacts={contacts} 
             leads={leads} 
-            onContactsUpdated={() => loadCrmData(true)} 
+            onContactsUpdated={() => afterChange()} 
             currentRole={currentRole} 
             setActiveSubTab={setActiveSubTab}
           />
@@ -212,7 +183,7 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
           <CrmCompanies 
             companies={companies} 
             leads={leads} 
-            onCompaniesUpdated={() => loadCrmData(true)} 
+            onCompaniesUpdated={() => afterChange()} 
             currentRole={currentRole} 
             setActiveSubTab={setActiveSubTab}
           />
@@ -221,20 +192,20 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
           <CrmLeadQueue 
             logs={logs} 
             leads={leads} 
-            onLogsUpdated={() => loadCrmData(true)} 
+            onLogsUpdated={() => afterChange()} 
             setActiveSubTab={setActiveSubTab}
           />
         )}
         {activeSubTab === 'rules' && (
           <CrmAssignmentRules 
-            onRulesUpdated={() => loadCrmData(true)} 
+            onRulesUpdated={() => afterChange()} 
             currentRole={currentRole} 
           />
         )}
         {activeSubTab === 'activities' && (
           <CrmActivities 
             leads={leads} 
-            onLeadsUpdated={() => loadCrmData(true)} 
+            onLeadsUpdated={() => afterChange()} 
             currentRole={currentRole} 
           />
         )}
@@ -246,20 +217,21 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
         {activeSubTab === 'plots-inventory' && (
           <CrmPlotsInventory />
         )}
-        {activeSubTab === 'offers' && <CrmOffers leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
-        {activeSubTab === 'finance' && <CrmFinance leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
-        {activeSubTab === 'contracts' && <CrmContracts leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
-        {activeSubTab === 'targets' && <CrmTargets leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
-        {activeSubTab === 'external-sales' && <CrmExternalSales leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
-        {activeSubTab === 'duplicates' && <CrmDuplicates leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
-        {activeSubTab === 'audit' && <CrmAudit leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'offers' && <CrmOffers leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'finance' && <CrmFinance leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'contracts' && <CrmContracts leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'targets' && <CrmTargets leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'external-sales' && <CrmExternalSales leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'duplicates' && <CrmDuplicates leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'audit' && <CrmAudit leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
         {activeSubTab === 'import-export' && (
           <CrmImportExport 
             leads={leads} 
-            onLeadsUpdated={() => loadCrmData(true)} 
+            onLeadsUpdated={() => afterChange()} 
             currentRole={currentRole} 
           />
         )}
+        </Suspense>
       </div>
     </div>
   );
