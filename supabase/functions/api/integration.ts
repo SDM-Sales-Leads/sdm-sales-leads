@@ -57,8 +57,8 @@ async function lbCaller(req: Request): Promise<Caller> {
 }
 
 /** public (self-authenticated) route taking the Land Bank token */
-function lbRoute(method: string, path: string, fn: (x: { req: Request; c: Caller; query: URLSearchParams }) => Promise<any>) {
-  route(method, path, async ({ req, query }) => fn({ req, c: await lbCaller(req), query }), { public: true });
+function lbRoute(method: string, path: string, fn: (x: { req: Request; c: Caller; query: URLSearchParams; params: Record<string, string> }) => Promise<any>) {
+  route(method, path, async ({ req, query, params }) => fn({ req, c: await lbCaller(req), query, params }), { public: true });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -105,6 +105,14 @@ lbRoute("POST", "/integration/plots-snapshot", async ({ req, c }) => {
   await logActivity(c, "Plot snapshot", `${plots.length} plots published from the Land Bank`, "system");
   return { success: true, count: plots.length };
 });
+
+/** the form state needed to rebuild a document: <= 8 KB serialised, otherwise dropped. _v marks that it exists. */
+function cleanOffer(o: any): any | null {
+  if (!isObj(o)) return null;
+  const c = { ...clean(o), _v: 1 };
+  const txt = JSON.stringify(c);
+  return txt.length <= 8192 ? c : null;
+}
 
 function cleanPlan(p: any): any | null {
   if (!isObj(p)) return null;
@@ -225,7 +233,7 @@ lbRoute("POST", "/integration/offer-printed", async ({ req, c }) => {
   const summary = str(b.summary, 500) || `${label} for ${codes}`;
   const ins = await admin.from("crm_offer_prints").insert({
     contact_id: k.id, lead_id: lead?.id || null, offer_type: offerType, plots, total_value: total && total >= 0 ? total : null,
-    summary, plan: cleanPlan(b.plan), doc_name: str(b.docName, 200) || null, printed_by: c.id, printed_by_name: c.name,
+    summary, plan: cleanPlan(b.plan), offer: cleanOffer(b.offer), doc_name: str(b.docName, 200) || null, printed_by: c.id, printed_by_name: c.name,
   }).select("id").single();
   if (ins.error) throw new HttpError(500, "Could not record the offer");
 
@@ -397,6 +405,25 @@ const statsCache = new Map<string, { until: number; data: any }>();
 const SIZE_BANDS: [string, number][] = [["< 2,000 m2", 2000], ["2,000 - 5,000 m2", 5000], ["5,000 - 10,000 m2", 10000], ["10,000 - 20,000 m2", 20000], ["20,000+ m2", Infinity]];
 const STATS_ROLES = new Set(["Admin", "Sales Operation", "Sales Director", "Executive (View)"]);
 
+/** requests = plots assigned on live leads (assignedAt inside the period when present) */
+async function loadRequests(from: string | null, to: string | null): Promise<any[]> {
+  const rows = await pageAll((a, z) => admin.from("crm_leads").select("id,status,ap:data->assignedPlots,cn:data->>customerName,co:data->>companyName,ow:data->>assignedSalespersonName,pm:data->>plotMode,ph:phone_norm,em:email_norm")
+    .is("deleted_at", null).not("data->assignedPlots", "is", null).order("id").range(a, z), 20000);
+  const out: any[] = [];
+  for (const l of rows) {
+    if (!Array.isArray(l.ap)) continue;
+    for (const p of l.ap.slice(0, 20)) {
+      const key = str(p?.key, 160);
+      if (!key) continue;
+      const at = str(p.assignedAt, 40);
+      const t = at && !isNaN(Date.parse(at)) ? new Date(at).toISOString() : "";
+      if (t && ((from && t < from) || (to && t >= to))) continue;
+      out.push({ leadId: l.id, contact: l.ph || l.em || l.id, customer: str(l.cn, 200), company: str(l.co, 200), ownerName: str(l.ow, 120), mode: l.pm === "manual" ? "manual" : "recommend", assignedAt: t || null, plot: p });
+    }
+  }
+  return out;
+}
+
 lbRoute("GET", "/integration/offer-stats", async ({ c, query }) => {
   if (!STATS_ROLES.has(c.role)) throw forbidden("Offer demand statistics are for management only");
   await rateLimit(`lbstats:${c.id}`, 60, 20);
@@ -409,18 +436,40 @@ lbRoute("GET", "/integration/offer-stats", async ({ c, query }) => {
     if (from) q = q.gte("printed_at", from); if (to) q = q.lt("printed_at", to);
     return q;
   }, 20000);
+  const reqs = await loadRequests(from, to);
+  const clicks = await pageAll((a, z) => {
+    let q: any = admin.from("crm_lb_clicks").select("plot_key").eq("kind", "hold").order("clicked_at", { ascending: false }).order("id").range(a, z);
+    if (from) q = q.gte("clicked_at", from); if (to) q = q.lt("clicked_at", to);
+    return q;
+  }, 20000);
+
   const field = (t: string) => (t === "sales_offer" ? "sales" : t === "financial_offer" ? "financial" : "proposal");
-  const totals = { prints: prints.length, salesOffers: 0, financialOffers: 0, proposals: 0, contacts: 0, plots: 0 };
+  const totals: any = { prints: prints.length, salesOffers: 0, financialOffers: 0, proposals: 0, contacts: 0, plots: 0, requests: 0, requestedPlots: 0 };
   const allContacts = new Set<string>();
-  const perPlot = new Map<string, any>(), byProject = new Map<string, any>(), byLand = new Map<string, any>(), bySector = new Map<string, any>();
-  const bands = new Map<string, number>(SIZE_BANDS.map(([b]) => [b, 0]));
+  const perPlot = new Map<string, any>();
+  const groups = { project: new Map<string, any>(), landType: new Map<string, any>(), sector: new Map<string, any>() };
+  const bands = new Map<string, any>(SIZE_BANDS.map(([b]) => [b, { band: b, total: 0, requests: 0, holdClicks: 0 }]));
   const plans = new Map<string, any>(), monthly = new Map<string, number>();
   const mode = { cash: 0, plan: 0, custom: 0 };
   let advSum = 0, advN = 0, yrSum = 0, yrN = 0;
-  const bump = (m: Map<string, any>, k: string, init: any, f: string, plotKey: string) => {
-    let r = m.get(k); if (!r) { r = { ...init, total: 0, sales: 0, financial: 0, proposal: 0, _p: new Set() }; m.set(k, r); }
-    r.total++; r[f]++; r._p.add(plotKey);
+
+  const plotRow = (key: string, x: any) => {
+    let r = perPlot.get(key);
+    if (!r) {
+      r = { key, project: str(x?.project, 120) || str(x?.park, 100), unit: str(x?.unit, 160), landType: str(x?.landType, 120), sector: str(x?.sector, 120), areaSqm: num(x?.areaSqm) ?? 0,
+        sales: 0, financial: 0, proposal: 0, total: 0, requests: 0, holdClicks: 0, _c: new Set(), _rc: new Set(), _rl: new Set(), lastAt: null };
+      perPlot.set(key, r);
+    }
+    return r;
   };
+  const grp = (m: Map<string, any>, name: string, label: string) => {
+    let g = m.get(name);
+    if (!g) { g = { [label]: name, total: 0, sales: 0, financial: 0, proposal: 0, requests: 0, holdClicks: 0, _p: new Set() }; m.set(name, g); }
+    return g;
+  };
+  const bandOf = (area: number) => (SIZE_BANDS.find(([, max]) => area < max) || SIZE_BANDS[SIZE_BANDS.length - 1])[0];
+  const names = (r: any) => [[groups.project, r.project || "-", "project"], [groups.landType, r.landType || "-", "landType"], [groups.sector, r.sector || "-", "sector"]] as [Map<string, any>, string, string][];
+
   for (const p of prints) {
     const f = field(p.offer_type);
     if (f === "sales") totals.salesOffers++; else if (f === "financial") totals.financialOffers++; else totals.proposals++;
@@ -440,33 +489,56 @@ lbRoute("GET", "/integration/offer-stats", async ({ c, query }) => {
       }
     }
     // a print with several plots adds 1 to each distinct plot / group, but only 1 to the print totals
-    const seen = new Set<string>(), seenP = new Set<string>(), seenL = new Set<string>(), seenS = new Set<string>(), seenB = new Set<string>();
+    const seen = new Set<string>(), seenG = new Set<string>();
     for (const x of Array.isArray(p.plots) ? p.plots : []) {
       const key = str(x?.key, 160) || str(x?.unit, 160);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      let r = perPlot.get(key);
-      if (!r) { r = { key, project: str(x.project, 120) || str(x.park, 100), unit: str(x.unit, 160), landType: str(x.landType, 120), sector: str(x.sector, 120), areaSqm: num(x.areaSqm) ?? 0, sales: 0, financial: 0, proposal: 0, total: 0, _c: new Set(), lastAt: null }; perPlot.set(key, r); }
+      const r = plotRow(key, x);
       r[f]++; r.total++; if (p.contact_id) r._c.add(p.contact_id);
       if (!r.lastAt || p.printed_at > r.lastAt) r.lastAt = p.printed_at;
-      const proj = r.project || "-", lt = r.landType || "-", sc = r.sector || "-";
-      if (!seenP.has(proj)) { seenP.add(proj); bump(byProject, proj, { project: proj }, f, key); } else byProject.get(proj)._p.add(key);
-      if (!seenL.has(lt)) { seenL.add(lt); bump(byLand, lt, { name: lt }, f, key); } else byLand.get(lt)._p.add(key);
-      if (!seenS.has(sc)) { seenS.add(sc); bump(bySector, sc, { name: sc }, f, key); } else bySector.get(sc)._p.add(key);
-      const band = (SIZE_BANDS.find(([, max]) => r.areaSqm < max) || SIZE_BANDS[SIZE_BANDS.length - 1])[0];
-      if (!seenB.has(band)) { seenB.add(band); bands.set(band, (bands.get(band) || 0) + 1); }
+      for (const [m, n, lab] of names(r)) { const g = grp(m, n, lab); g._p.add(key); if (!seenG.has(lab + "\u0001" + n)) { seenG.add(lab + "\u0001" + n); g.total++; g[f]++; } }
+      const band = bandOf(r.areaSqm);
+      if (!seenG.has("b\u0001" + band)) { seenG.add("b\u0001" + band); bands.get(band).total++; }
     }
   }
+  // requests: distinct lead x plot
+  const seenReq = new Set<string>();
+  for (const q of reqs) {
+    const key = str(q.plot.key, 160), id = q.leadId + "\u0001" + key;
+    if (seenReq.has(id)) continue;
+    seenReq.add(id);
+    const r = plotRow(key, q.plot);
+    r.requests++; r._rl.add(q.leadId); r._rc.add(q.contact);
+    for (const [m, n, lab] of names(r)) { const g = grp(m, n, lab); g._p.add(key); g.requests++; }
+    bands.get(bandOf(r.areaSqm)).requests++;
+  }
+  totals.requests = seenReq.size;
+  totals.requestedPlots = new Set(reqs.map((q) => str(q.plot.key, 160))).size;
+  for (const k of clicks) {
+    const key = str(k.plot_key, 160);
+    const r = perPlot.get(key);
+    if (!r) continue; // a click on a plot nobody offered or requested adds nothing to the ranking
+    r.holdClicks++;
+    for (const [m, n, lab] of names(r)) grp(m, n, lab).holdClicks++;
+    bands.get(bandOf(r.areaSqm)).holdClicks++;
+  }
   totals.contacts = allContacts.size; totals.plots = perPlot.size;
-  const fin = (m: Map<string, any>) => [...m.values()].map((r) => { const o: any = { ...r, plots: r._p.size }; delete o._p; return o; }).sort((a, b) => b.total - a.total);
+  // score = prints + requests + 0.5 x hold clicks
+  const score = (o: any) => Math.round((o.total + o.requests + 0.5 * o.holdClicks) * 10) / 10;
+  const fin = (m: Map<string, any>, rename?: [string, string]) => [...m.values()].map((r) => {
+    const o: any = { ...r, plots: r._p.size }; delete o._p; o.score = score(o); return o;
+  }).sort((a, b) => b.score - a.score || b.total - a.total);
   const planList = [...plans.values()].sort((a, b) => b.count - a.count);
+  const plotsOut = [...perPlot.values()].map((r) => {
+    const o: any = { ...r, contacts: r._c.size, requestContacts: r._rc.size }; delete o._c; delete o._rc; delete o._rl; o.score = score(o); return o;
+  }).sort((a, b) => b.score - a.score || b.total - a.total).slice(0, 2000);
   const data = {
     success: true, generatedAt: nowIso(), totals,
-    perPlot: [...perPlot.values()].map((r) => { const o = { ...r, contacts: r._c.size }; delete (o as any)._c; return o; }).sort((a, b) => b.total - a.total).slice(0, 2000),
-    byProject: fin(byProject),
-    byLandType: fin(byLand).map((r) => { const o = { ...r, landType: r.name }; delete o.name; return o; }),
-    bySector: fin(bySector).map((r) => { const o = { ...r, sector: r.name }; delete o.name; return o; }),
-    bySizeBand: [...bands.entries()].map(([band, total]) => ({ band, total })),
+    scoreFormula: "score = prints + requests + 0.5 x hold clicks",
+    perPlot: plotsOut,
+    byProject: fin(groups.project), byLandType: fin(groups.landType), bySector: fin(groups.sector),
+    bySizeBand: [...bands.values()].map((b) => ({ ...b, score: score(b) })),
     plans: planList,
     planSummary: {
       ...mode, avgAdvancePct: advN ? Math.round((advSum / advN) * 10) / 10 : null, avgYears: yrN ? Math.round((yrSum / yrN) * 10) / 10 : null,
@@ -477,4 +549,102 @@ lbRoute("GET", "/integration/offer-stats", async ({ c, query }) => {
   if (statsCache.size > 20) statsCache.clear();
   statsCache.set(ck, { until: Date.now() + 60_000, data });
   return data;
+});
+
+// ---------------------------------------------------------------------------------------------
+// 8. offer history (Land Bank token)
+// ---------------------------------------------------------------------------------------------
+const SEE_ALL_ROLES = new Set(["Admin", "Sales Operation", "Sales Director", "Executive (View)"]);
+/** null = everybody's prints, otherwise the people whose prints this caller may see (server-side rule, never the page's) */
+async function printScope(c: Caller): Promise<string[] | null> {
+  const s = crmScope(c);
+  if (SEE_ALL_ROLES.has(c.role) || s === "all" || s === "viewall" || s === "finance") return null;
+  if (c.role === "Sales Team Leader") return await teamIds(c);
+  return [c.id];
+}
+
+async function contactMap(ids: string[]): Promise<Map<string, any>> {
+  const m = new Map<string, any>();
+  const uniq = [...new Set(ids.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += 100) {
+    const { data } = await admin.from("crm_contacts").select("id,data").in("id", uniq.slice(i, i + 100));
+    for (const k of data || []) m.set(k.id, k.data || {});
+  }
+  return m;
+}
+const last4 = (p: any) => { const d = String(p || "").replace(/\D/g, ""); return d.length >= 4 ? d.slice(-4) : ""; };
+
+function historyOut(r: any, cm: Map<string, any>, me?: string) {
+  const k = cm.get(r.contact_id) || {};
+  return {
+    id: r.id, printedAt: r.printed_at, offerType: r.offer_type, contactId: r.contact_id,
+    contactName: str(k.name, 200), contactCompany: str(k.company || k.companyName, 200), contactPhone: last4(k.phoneNumber),
+    plots: (Array.isArray(r.plots) ? r.plots : []).slice(0, 50).map((p: any) => ({ key: p.key, park: p.park, unit: p.unit, areaSqm: p.areaSqm })),
+    totalValue: r.total_value === null || r.total_value === undefined ? null : Number(r.total_value),
+    plan: r.plan || null, summary: r.summary || "", docName: r.doc_name || "",
+    printedBy: r.printed_by, printedByName: r.printed_by_name || "", mine: !!me && r.printed_by === me, hasOffer: !!r.has_offer,
+  };
+}
+const HIST_COLS = "id,printed_at,offer_type,contact_id,plots,total_value,plan,summary,doc_name,printed_by,printed_by_name,has_offer:offer->>_v";
+
+lbRoute("GET", "/integration/offer-history", async ({ c, query }) => {
+  await rateLimit(`lbhist:${c.id}`, 60, 60);
+  const who = await printScope(c);
+  const { from, to } = range(query);
+  const limit = Math.max(1, Math.min(100, parseInt(query.get("limit") || "50") || 50));
+  const offset = Math.max(0, Math.min(100000, parseInt(query.get("offset") || "0") || 0));
+  const type = str(query.get("type"), 20);
+  const term = str(query.get("q"), 80).replace(/[^\p{L}\p{N} @.+\-]/gu, "").trim();
+  let q: any = admin.from("crm_offer_prints").select(HIST_COLS, { count: "exact" }).order("printed_at", { ascending: false }).order("id").range(offset, offset + limit - 1);
+  if (who) q = q.in("printed_by", who);
+  if (from) q = q.gte("printed_at", from); if (to) q = q.lt("printed_at", to);
+  if (OFFER_TYPES[type]) q = q.eq("offer_type", type);
+  if (term.length >= 2) {
+    const { data: ks } = await admin.from("crm_contacts").select("id").is("deleted_at", null)
+      .or(`name_norm.ilike.%${normName(term)}%,data->>company.ilike.%${term}%`).limit(200);
+    const ids = (ks || []).map((k: any) => k.id).filter((x: string) => ID_RE.test(x));
+    const f = [`printed_by_name.ilike.%${term}%`, `summary.ilike.%${term}%`, `doc_name.ilike.%${term}%`];
+    if (ids.length) f.push(`contact_id.in.(${ids.join(",")})`);
+    q = q.or(f.join(","));
+  }
+  const { data, count, error } = await q;
+  if (error) throw new HttpError(500, "Could not load the offers");
+  const cm = await contactMap((data || []).map((r: any) => r.contact_id));
+  return { success: true, total: count || 0, rows: (data || []).map((r: any) => historyOut(r, cm, c.id)) };
+});
+
+lbRoute("GET", "/integration/offer-history/:id", async ({ c, params }) => {
+  await rateLimit(`lbhist1:${c.id}`, 60, 60);
+  const id = asUuid(params.id);
+  if (!id) throw new HttpError(404, "Offer not found");
+  const who = await printScope(c);
+  const { data: r } = await admin.from("crm_offer_prints").select("*").eq("id", id).maybeSingle();
+  if (!r || (who && !who.includes(r.printed_by))) throw new HttpError(404, "Offer not found");
+  const cm = await contactMap([r.contact_id]);
+  const o = isObj(r.offer) ? { ...r.offer } : null;
+  if (o) delete o._v;
+  return { success: true, row: historyOut({ ...r, has_offer: r.offer ? 1 : null }, cm, c.id), offer: o };
+});
+
+lbRoute("GET", "/integration/offer-stats/plot", async ({ c, query }) => {
+  if (!STATS_ROLES.has(c.role)) throw forbidden("Offer demand statistics are for management only");
+  await rateLimit(`lbplot:${c.id}`, 60, 60);
+  const key = str(query.get("key"), 160);
+  if (!key) throw bad("A plot key is required");
+  const limit = Math.max(1, Math.min(100, parseInt(query.get("limit") || "50") || 50));
+  const { data, count, error } = await admin.from("crm_offer_prints").select("id,printed_at,offer_type,contact_id,total_value,plan,printed_by_name", { count: "exact" })
+    .contains("plots", [{ key }]).order("printed_at", { ascending: false }).limit(limit);
+  if (error) throw new HttpError(500, "Could not load the offers");
+  const cm = await contactMap((data || []).map((r: any) => r.contact_id));
+  const reqs = (await loadRequests(null, null)).filter((q) => str(q.plot.key, 160) === key);
+  const seenL = new Set<string>();
+  const requests = reqs.filter((q) => (seenL.has(q.leadId) ? false : (seenL.add(q.leadId), true))).slice(0, limit)
+    .map((q) => ({ leadId: q.leadId, customer: q.customer, company: q.company, ownerName: q.ownerName, assignedAt: q.assignedAt, mode: q.mode }));
+  return {
+    success: true, key, total: count || 0, requests,
+    rows: (data || []).map((r: any) => {
+      const k = cm.get(r.contact_id) || {};
+      return { id: r.id, printedAt: r.printed_at, offerType: r.offer_type, contactName: str(k.name, 200), contactCompany: str(k.company || k.companyName, 200), printedByName: r.printed_by_name || "", totalValue: r.total_value === null ? null : Number(r.total_value), plan: r.plan || null };
+    }),
+  };
 });

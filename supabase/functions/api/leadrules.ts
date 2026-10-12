@@ -19,6 +19,26 @@ const CASH_FIELDS = ["cashStatus", "cashBy", "cashDate"];
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+const PLOT_STATUS = new Set(["available", "reserved", "sold", "eoi", "hold", "nfs", "unknown"]);
+const cs = (v: any, n: number) => (v === undefined || v === null ? "" : String(v).trim().slice(0, n));
+const cn = (v: any) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+/** max 20 plots, whitelisted and clipped fields, one entry per plot key */
+export function cleanAssignedPlots(v: any): any[] {
+  if (!Array.isArray(v)) return [];
+  const seen = new Set<string>(), out: any[] = [];
+  for (const p of v) {
+    if (!p || typeof p !== "object") continue;
+    const key = cs(p.key, 160);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const st = cs(p.status, 20).toLowerCase();
+    const at = cs(p.assignedAt, 40);
+    out.push({ key, park: cs(p.park, 100), project: cs(p.project, 120), unit: cs(p.unit, 160), areaSqm: cn(p.areaSqm), listPriceSqm: cn(p.listPriceSqm), listTotal: cn(p.listTotal), status: PLOT_STATUS.has(st) ? st : "unknown", assignedAt: at && !isNaN(Date.parse(at)) ? new Date(at).toISOString() : "", assignedBy: cs(p.assignedBy, 120) });
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
 export interface Sanitized { data: any; error?: string; audits: { action: string; from?: string; to?: string; note?: string }[] }
 
 /**
@@ -29,6 +49,15 @@ export function sanitizeLead(d: any, ex: any | null, c: Caller, scope: CrmScope,
   const audits: Sanitized["audits"] = [];
   if (JSON.stringify(d).length > 400_000) return { data: d, error: "this lead is too large to save", audits };
   if (d.status && !ALL_STATUSES.has(d.status)) return { data: d, error: `unknown status "${String(d.status).slice(0, 40)}"`, audits };
+  // plots assigned to the lead and the recommend / manual preference: owner and managers edit them like other lead fields
+  const oldPlots = JSON.stringify((ex?.data || {}).assignedPlots || []);
+  if (d.assignedPlots !== undefined) d.assignedPlots = cleanAssignedPlots(d.assignedPlots);
+  if (d.plotMode !== undefined && d.plotMode !== "recommend" && d.plotMode !== "manual") delete d.plotMode;
+  if (JSON.stringify(d.assignedPlots || []) !== oldPlots) {
+    const was = new Set(((ex?.data || {}).assignedPlots || []).map((p: any) => p.key)), now = new Set((d.assignedPlots || []).map((p: any) => p.key));
+    const added = [...now].filter((k) => !was.has(k)), removed = [...was].filter((k) => !now.has(k));
+    audits.push({ action: "plots", from: removed.join(", ").slice(0, 300) || undefined, to: added.join(", ").slice(0, 300) || undefined, note: "assigned plots" });
+  }
   const canCash = scope === "all" || c.perms.canConfirmCash === true;
 
   if (ex) {

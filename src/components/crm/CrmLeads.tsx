@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Lead, Contact, Company, LeadStatus, LeadPriority, LostReason, CommentNote, Attachment, TimelineEvent } from './types';
-import { CrmPlotRecommendations } from './CrmPlotRecommendations';
+import { toast } from 'sonner';
+import { LeadPlotsPanel } from './LeadPlotsPanel';
 import { ColumnSelector } from './ColumnSelector';
 import { crmService, normalizePhone } from './crmService';
 import {
@@ -2557,13 +2558,13 @@ ${user.name || ''}`);
                 </div>
               </div>
 
-              <CrmPlotRecommendations 
-                  plots={plots} 
-                  landBankUrl={plotsInfo?.landBankUrl}
-                  leadId={selectedLead.id}
-                  project={selectedLead.project} 
-                  requiredSize={selectedLead.requiredSize}
+              <LeadPlotsPanel
+                  lead={selectedLead} plots={plots} landBankUrl={plotsInfo?.landBankUrl} user={user?.name || 'User'}
                   onNavigateToInventory={() => setActiveSubTab('plots-inventory')}
+                  onSave={(upd) => {
+                    try { const u = crmService.updateLead(selectedLead.id, upd, user?.name || 'User', { userId: user?.id != null ? String(user.id) : undefined }); setSelectedLead(u); onLeadsUpdated(); }
+                    catch (e: any) { toast.error(e?.message || 'Could not save.'); }
+                  }}
               />
 
               <OfferPrintsSection leadId={selectedLead.id} />

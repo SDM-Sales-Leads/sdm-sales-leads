@@ -62,7 +62,15 @@ export interface TimelineEvent {
   description: string;
 }
 
+export interface AssignedPlot {
+  key: string; park: string; project: string; unit: string; areaSqm: number;
+  listPriceSqm: number | null; listTotal: number | null; status: string; assignedAt: string; assignedBy: string;
+}
+
 export interface Lead {
+  /** plots chosen for this lead (Land Bank keys, max 20) and how the salesperson prefers to pick them */
+  assignedPlots?: AssignedPlot[];
+  plotMode?: 'recommend' | 'manual';
   emailId?: string;
   id: string; // SL-XXXX
   date: string;
