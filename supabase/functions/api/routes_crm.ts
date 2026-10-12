@@ -38,7 +38,7 @@ const SPECS: Record<string, Spec> = {
   leads: {
     table: "crm_leads", soft: true,
     cols: (d) => leadColumns(d),
-    owns: (c, scope, team, r) => scope === "all" || (scope === "finance" ? r.status === "Won" : r.assigned_to === c.id || r.created_by === c.id || (scope === "team" && !!r.assigned_to && team.includes(r.assigned_to))),
+    owns: (c, scope, team, r) => scope === "all" || scope === "viewall" || (scope === "finance" ? r.status === "Won" : r.assigned_to === c.id || r.created_by === c.id || (scope === "team" && !!r.assigned_to && team.includes(r.assigned_to))),
     canDelete: (_c, scope) => scope === "all" || scope === "team",
   },
   contacts: {
@@ -68,7 +68,7 @@ const SPECS: Record<string, Spec> = {
   "external-sales": {
     table: "crm_external_sales", soft: false,
     cols: (d) => ({ owner_id: asUuid(d.salespersonId) }),
-    owns: (c, scope, team, r) => scope === "all" || (scope !== "finance" && (r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)))),
+    owns: (c, scope, team, r) => scope === "all" || scope === "viewall" || (scope !== "finance" && (r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)))),
     canDelete: (_c, scope) => scope === "all",
   },
   "email-logs": {
@@ -92,6 +92,8 @@ function externalRule(d: any, old: any | null, c: Caller, scope: CrmScope): stri
   } else { d.confirmedBy = old.confirmedBy; d.confirmedDate = old.confirmedDate; if (scope === "own") { d.amount = old.amount; d.salespersonId = old.salespersonId; } }
   return null;
 }
+
+const IDENTITY_FIELDS = ["customerName", "companyName", "phoneNumber", "phone2", "email", "source", "priority", "date", "project", "requiredSize", "industry", "nationality", "refNo", "description"];
 
 const out = (r: any) => ({ ...r.data, id: r.id, _rev: r.updated_at || r.created_at });
 
@@ -123,7 +125,11 @@ for (const [name, spec] of Object.entries(SPECS)) {
   route("POST", `/crm/${name}`, async ({ req, c }) => {
     needCrm(c);
     await rateLimit(`crmsave:${c.id}`, 60, 120);
-    const scope = crmScope(c);
+    // "view all" roles (executives, marketing) read everything but write like a rep; marketing may also edit the
+    // identity of a lead (contact data, source, project) and create unassigned leads, which operations then distribute
+    const rawScope = crmScope(c);
+    const mkt = rawScope === "viewall" && c.perms.canEditLeadIdentity === true;
+    const scope: CrmScope = rawScope === "viewall" ? "own" : rawScope;
     const b = await body(req, 8_000_000);
     if (Array.isArray(b)) throw bad("Send { upserts, deletes } (whole-list saves are no longer accepted)");
     const upserts: any[] = Array.isArray(b.upserts) ? b.upserts : [];
@@ -138,14 +144,18 @@ for (const [name, spec] of Object.entries(SPECS)) {
 
     for (const raw of upserts) {
       if (!isObj(raw) || typeof raw.id !== "string" || !ID_RE.test(raw.id)) { rejected.push({ id: String(raw?.id ?? ""), reason: "bad id" }); continue; }
-      const d: any = clean(raw);
+      let d: any = clean(raw);
       const rev = d._rev; delete d._rev;
       let id = d.id;
       const { data: ex } = await admin.from(spec.table).select("*").eq("id", id).maybeSingle();
       try {
         if (ex) {
           if (ex.deleted_at) { rejected.push({ id, reason: "was deleted" }); continue; }
-          if (!spec.owns(c, scope, team, ex)) { rejected.push({ id, reason: "not yours" }); continue; }
+          let identityOnly = false;
+          if (!spec.owns(c, scope, team, ex)) {
+            if (mkt && name === "leads") identityOnly = true; // marketing: contact details only
+            else { rejected.push({ id, reason: "not yours" }); continue; }
+          }
           if (!rev) { // client thinks it is new but the id is taken: give it a fresh id
             if (name === "leads" || name === "contacts" || name === "companies") {
               id = await nextId(name === "leads" ? "lead" : name === "contacts" ? "contact" : "company");
@@ -159,7 +169,19 @@ for (const [name, spec] of Object.entries(SPECS)) {
             conflicts.push(id); continue;
           }
           if (new Date(rev).getTime() !== new Date(ex.updated_at).getTime()) { conflicts.push(id); continue; }
-          if (name === "leads") {
+          if (name === "leads" && identityOnly) {
+            const nd: any = { ...ex.data };
+            for (const k of IDENTITY_FIELDS) if (d[k] !== undefined && String(d[k]) !== String(nd[k] ?? "")) {
+              if (["source", "phoneNumber", "email", "priority"].includes(k)) audit(id, { action: k === "source" ? "source" : "edit", from: `${k}=${nd[k] ?? ""}`, to: `${k}=${d[k]}`, note: "by marketing" });
+              nd[k] = d[k];
+            }
+            if (d.dupCleared !== undefined) nd.dupCleared = !!d.dupCleared;
+            if (d.mergedInto && !nd.mergedInto) { nd.mergedInto = String(d.mergedInto).slice(0, 60); nd.status = "Duplicate"; audit(id, { action: "merge", to: nd.mergedInto }); }
+            const have = new Set((nd.timeline || []).map((x: any) => x?.id));
+            nd.timeline = [...(nd.timeline || []), ...(Array.isArray(d.timeline) ? d.timeline : []).filter((x: any) => x?.id && !have.has(x.id))];
+            nd.lastUpdated = nowIso();
+            d = nd;
+          } else if (name === "leads") {
             const newAssignee = asUuid(d.assignedSalespersonId);
             let assigneeName: string | undefined;
             if ((newAssignee || null) !== (ex.assigned_to || null)) {
@@ -191,9 +213,10 @@ for (const [name, spec] of Object.entries(SPECS)) {
           // new row
           if (name === "leads") {
             const as = asUuid(d.assignedSalespersonId);
-            if (scope === "own" && as && as !== c.id) { rejected.push({ id, reason: "you can only create leads for yourself" }); continue; }
+            if (scope === "own" && as && as !== c.id && !mkt) { rejected.push({ id, reason: "you can only create leads for yourself" }); continue; }
             if (scope === "team" && as && !team.includes(as)) { rejected.push({ id, reason: "that person is not in your team" }); continue; }
-            if (scope === "own" && !as) { d.assignedSalespersonId = c.id; d.assignedSalespersonName = c.name; }
+            if (scope === "own" && !as && !mkt) { d.assignedSalespersonId = c.id; d.assignedSalespersonName = c.name; }
+            if (mkt && as) { d.assignedSalespersonId = ""; d.assignedSalespersonName = ""; } // marketing does not distribute
             if (scope === "finance") { rejected.push({ id, reason: "not allowed" }); continue; }
             const san = sanitizeLead(d, null, c, scope);
             if (san.error) { rejected.push({ id, reason: san.error }); continue; }
@@ -219,12 +242,12 @@ for (const [name, spec] of Object.entries(SPECS)) {
     }
 
     if (deletes.length) {
-      if (!spec.canDelete(c, scope)) { for (const id of deletes) rejected.push({ id, reason: "you cannot delete these" }); }
+      if (!(spec.canDelete(c, scope) || (mkt && name === "leads"))) { for (const id of deletes) rejected.push({ id, reason: "you cannot delete these" }); }
       else {
         for (const id of deletes.slice(0, 500)) {
           if (!ID_RE.test(id)) continue;
           const { data: ex } = await admin.from(spec.table).select("*").eq("id", id).maybeSingle();
-          if (!ex || !spec.owns(c, scope, team, ex)) continue;
+          if (!ex || !(spec.owns(c, scope, team, ex) || (mkt && name === "leads"))) continue;
           if (name === "leads") audit(id, { action: "delete", from: ex.data?.status, note: `${ex.data?.customerName || ""} (${ex.data?.assignedSalespersonName || "unassigned"})` });
           if (spec.soft) await admin.from(spec.table).update({ deleted_at: nowIso() }).eq("id", id);
           else await admin.from(spec.table).delete().eq("id", id);

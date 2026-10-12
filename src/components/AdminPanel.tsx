@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { TeamImport } from './TeamImport';
 import { Ticket, Category, SLAConfig, RolePermissions, Department, Role, ALL_DEPARTMENTS } from '../types';
 import { adminService } from '../services/adminService';
 import { ticketService } from '../services/ticketService';
@@ -413,6 +414,7 @@ export const AdminPanel: React.FC = () => {
 
       {activeTab === 'users' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+          <div className="xl:col-span-2"><TeamImport onDone={() => loadData(false)} /></div>
           {/* User Management */}
           <div className="bento-card">
             <h3 className="font-bold text-xl mb-6 flex items-center gap-2">
@@ -867,6 +869,9 @@ export const AdminPanel: React.FC = () => {
                           <PermissionToggle label="Targets & My Report" active={!!rolePermissions[selectedRoleIndex].canViewSalesTargets} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesTargets', val)} />
                           <PermissionToggle label="External Sales" active={!!rolePermissions[selectedRoleIndex].canViewSalesExternal} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesExternal', val)} />
                           <PermissionToggle label="Lead audit trail" active={!!rolePermissions[selectedRoleIndex].canViewSalesAudit} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesAudit', val)} />
+                          <PermissionToggle label="See ALL leads (read-only)" active={!!rolePermissions[selectedRoleIndex].canViewAllLeads} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewAllLeads', val)} />
+                          <PermissionToggle label="Edit lead contact details / add unassigned leads (marketing)" active={!!rolePermissions[selectedRoleIndex].canEditLeadIdentity} onChange={(val) => updatePermission(selectedRoleIndex, 'canEditLeadIdentity', val)} />
+                          <PermissionToggle label="Distribute leads (all leads, reassign)" active={!!rolePermissions[selectedRoleIndex].canDistributeLeads} onChange={(val) => updatePermission(selectedRoleIndex, 'canDistributeLeads', val)} />
                         </div>
                       )}
                     </div>

@@ -103,11 +103,12 @@ export function needAdmin(c: Caller) {
 // "management" = can open the admin panel (Admin, Sales Operation...)
 export const isManager = (c: Caller) => can(c, "canViewAdminPanel");
 
-export type CrmScope = "all" | "team" | "own" | "finance";
+export type CrmScope = "all" | "team" | "own" | "finance" | "viewall";
 export function crmScope(c: Caller): CrmScope {
-  if (isAdmin(c) || c.role === "Sales Operation" || c.perms.canViewSalesRules === true) return "all";
+  if (isAdmin(c) || c.role === "Sales Operation" || c.perms.canViewSalesRules === true || c.perms.canDistributeLeads === true) return "all";
   if (c.role === "Sales Team Leader") return "team";
   if (c.perms.canConfirmCash === true) return "finance"; // accounts receivable: won deals only
+  if (c.perms.canViewAllLeads === true || c.perms.canEditLeadIdentity === true) return "viewall"; // sees everything, changes only what the role allows
   return "own";
 }
 export function needCrm(c: Caller) {

@@ -192,6 +192,9 @@ export interface RolePermissions {
   canViewSalesTargets?: boolean;
   canViewSalesExternal?: boolean;
   canViewSalesAudit?: boolean;
+  canViewAllLeads?: boolean;
+  canEditLeadIdentity?: boolean;
+  canDistributeLeads?: boolean;
 };
 
 export interface EmailImportLog {

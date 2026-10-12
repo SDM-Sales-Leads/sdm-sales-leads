@@ -103,6 +103,47 @@ route("POST", "/users", async ({ req, c }) => {
   return { ...userOut(row), ...(generated ? { temporaryPassword: password } : {}), linkedLeads: Number(linked) || 0 };
 });
 
+// Create a whole team in one go (used to move the people and the reporting lines of the previous CRM). Admin only.
+// Each person gets a temporary password (shown once) and must choose their own at first sign-in.
+route("POST", "/users/bulk", async ({ req, c }) => {
+  needAdmin(c);
+  await rateLimit(`bulkusers:${c.id}`, 3600, 10);
+  const b = await body(req, 200_000);
+  const list: any[] = Array.isArray(b.users) ? b.users : [];
+  if (!list.length || list.length > 100) throw bad("Send 1-100 users");
+  const results: any[] = [];
+  const byEmail: Record<string, string> = {};
+  const { data: existing } = await admin.from("app_users").select("id,email");
+  for (const u of existing || []) byEmail[String(u.email).toLowerCase()] = u.id;
+  for (const u of list) {
+    const email = str(u?.email, 254).toLowerCase(), name = str(u?.name, 120), role = str(u?.role, 60);
+    if (!name || !isEmail(email)) { results.push({ email, name, status: "skipped: name or e-mail invalid" }); continue; }
+    if (byEmail[email]) { results.push({ email, name, status: "already exists" }); continue; }
+    if (!(await roleExists(role))) { results.push({ email, name, status: `skipped: role "${role}" does not exist (run the migration first)` }); continue; }
+    const password = randomPassword();
+    const { data: created, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+    if (error || !created?.user) { results.push({ email, name, status: "failed: could not create the login" }); continue; }
+    const t = Number(u.annualTarget);
+    const row = { id: created.user.id, email, name, role, department: str(u.department, 80) || null, team_leader_id: null, active: true, on_leave: false, must_change_password: true, annual_target: Number.isFinite(t) && t > 0 ? t : null };
+    const ins = await admin.from("app_users").insert(row);
+    if (ins.error) { await admin.auth.admin.deleteUser(created.user.id); results.push({ email, name, status: "failed: could not save" }); continue; }
+    byEmail[email] = created.user.id;
+    const { data: linked } = await admin.rpc("crm_link_owner", { p_user: row.id, p_name: name });
+    results.push({ email, name, role, status: "created", temporaryPassword: password, linkedLeads: Number(linked) || 0 });
+  }
+  // reporting lines, after everybody exists
+  for (const u of list) {
+    const email = str(u?.email, 254).toLowerCase(), boss = str(u?.reportsToEmail, 254).toLowerCase();
+    if (!boss || !byEmail[email] || !byEmail[boss] || byEmail[email] === byEmail[boss]) continue;
+    const r = results.find((x) => x.email === email);
+    if (r?.status !== "created") continue; // never rewire people that already existed
+    await admin.from("app_users").update({ team_leader_id: byEmail[boss] }).eq("id", byEmail[email]);
+    r.reportsTo = boss;
+  }
+  await logActivity(c, "Bulk create users", `${results.filter((x) => x.status === "created").length} user(s) created`, "admin");
+  return { success: true, results };
+});
+
 route("PUT", "/users/:id", async ({ req, c, params }) => {
   need(c, "canViewAdminPanel");
   if (!UUID_RE.test(params.id)) throw bad("Invalid user id");

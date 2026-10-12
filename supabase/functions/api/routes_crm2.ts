@@ -13,7 +13,7 @@ async function visibleLead(c: Caller, id: string) {
   const { data: ex } = await admin.from("crm_leads").select("*").eq("id", id).is("deleted_at", null).maybeSingle();
   if (!ex) return null;
   const scope = crmScope(c);
-  if (scope === "all") return ex;
+  if (scope === "all" || scope === "viewall") return ex;
   if (scope === "finance") return ex.status === "Won" ? ex : null;
   if (ex.assigned_to === c.id || ex.created_by === c.id) return ex;
   if (scope === "team" && ex.assigned_to && (await teamIds(c)).includes(ex.assigned_to)) return ex;
