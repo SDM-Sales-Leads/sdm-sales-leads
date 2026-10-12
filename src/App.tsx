@@ -22,6 +22,8 @@ import { motion } from 'motion/react';
 
 import { Menu } from 'lucide-react';
 import { Logo } from './constants';
+import { useViewMode } from './lib/viewMode';
+import { OldViewShell } from './components/OldViewShell';
 
 const AppContent: React.FC = () => {
   const { user, permissions, isLoading, mustChangePassword } = useAuth();
@@ -33,6 +35,7 @@ const AppContent: React.FC = () => {
   const [tickets, setTickets] = useState<TicketType[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<TicketType | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const viewMode = useViewMode(user?.id);
 
   useEffect(() => {
     if (user) {
@@ -133,40 +136,7 @@ const AppContent: React.FC = () => {
     return <ChangePassword />;
   }
 
-  return (
-    <div className="flex h-screen overflow-hidden relative">
-      <AnimatedBackground />
-      
-      <div className="flex flex-1 h-screen overflow-hidden z-10">
-        <Sidebar 
-          activeTab={activeTab} 
-          setActiveTab={(tab) => {
-            setActiveTab(tab);
-            setSelectedTicket(null);
-          }} 
-          crmSubTab={crmSubTab}
-          setCrmSubTab={setCrmSubTab}
-          isOpen={isSidebarOpen}
-          setIsOpen={setIsSidebarOpen}
-        />
-        
-        <div className="flex-1 flex flex-col min-w-0">
-          {/* Mobile Header */}
-          <header className="lg:hidden bg-brand-black text-white px-4 py-2 flex items-center justify-between sticky top-0 z-30">
-            <div className="flex flex-col items-center">
-              <Logo height="h-12" />
-              <span className="font-bold text-[10px] text-white/90 tracking-wider uppercase">W-CRM</span>
-            </div>
-            <button 
-              onClick={() => setIsSidebarOpen(true)}
-              className="p-2 hover:bg-white/10 rounded-lg"
-            >
-              <Menu size={24} />
-            </button>
-          </header>
-
-          <main className="flex-1 p-4 md:p-8 overflow-y-auto">
-            {/* no exit animation and no waiting: the new page appears at once (a 100 ms fade only) */}
+  const pageContent = (
             <Suspense fallback={<div className="p-8 text-sm text-brand-gray">Loading…</div>}>
               <motion.div
                 key={selectedTicket ? `detail-${selectedTicket.id}` : activeTab}
@@ -204,6 +174,55 @@ const AppContent: React.FC = () => {
                 )}
               </motion.div>
             </Suspense>
+  );
+
+  if (viewMode === 'old') {
+    return (
+      <OldViewShell
+        activeTab={activeTab}
+        crmSubTab={crmSubTab}
+        go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }}
+      >
+        {pageContent}
+      </OldViewShell>
+    );
+  }
+
+  return (
+    <div className="flex h-screen overflow-hidden relative">
+      <AnimatedBackground />
+      
+      <div className="flex flex-1 h-screen overflow-hidden z-10">
+        <Sidebar 
+          activeTab={activeTab} 
+          setActiveTab={(tab) => {
+            setActiveTab(tab);
+            setSelectedTicket(null);
+          }} 
+          crmSubTab={crmSubTab}
+          setCrmSubTab={setCrmSubTab}
+          isOpen={isSidebarOpen}
+          setIsOpen={setIsSidebarOpen}
+        />
+        
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Mobile Header */}
+          <header className="lg:hidden bg-brand-black text-white px-4 py-2 flex items-center justify-between sticky top-0 z-30">
+            <div className="flex flex-col items-center">
+              <Logo height="h-12" />
+              <span className="font-bold text-[10px] text-white/90 tracking-wider uppercase">W-CRM</span>
+            </div>
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className="p-2 hover:bg-white/10 rounded-lg"
+            >
+              <Menu size={24} />
+            </button>
+          </header>
+
+          <main className="flex-1 p-4 md:p-8 overflow-y-auto">
+            {/* no exit animation and no waiting: the new page appears at once (a 100 ms fade only) */}
+            {pageContent}
           </main>
         </div>
       </div>

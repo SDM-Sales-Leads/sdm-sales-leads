@@ -213,22 +213,26 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
          }
       });
 
-      if (data.newLeadsCount > 0) {
-        setSyncStatus(`Sync complete. Found and parsed ${data.newLeadsCount} leads.`);
-        setSyncNotification({
-          count: data.newLeadsCount,
-          leads: [] // Could be populated if backend returned it, but UI handles empty array gracefully
-        });
+      const checked = data.processed || 0;
+      if (data.skipped) {
+        setSyncStatus('Another sync is already running. Try again in a moment.');
+      } else if (data.newLeadsCount > 0) {
+        setSyncStatus('');
+        setSyncNotification({ count: data.newLeadsCount, leads: data.leads || [] });
+        setTimeout(() => setSyncNotification(null), 15000);
+      } else if (checked === 0) {
+        setSyncStatus('Sync complete. No new lead e-mails in the inbox.');
       } else {
-        setSyncStatus('Sync complete. No new sales leads found.');
+        setSyncStatus(`Sync complete. Checked ${checked} new e-mail(s): no new leads (${data.duplicates || 0} duplicate, ${data.failed || 0} could not be read).`);
       }
+      if (data.remaining > 0) setSyncStatus((s) => `${s || ''} ${data.remaining} more e-mails are waiting. Press Sync again.`.trim());
       
       onLogsUpdated();
     } catch (e: any) {
       setSyncStatus('Error: ' + e.message);
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setSyncStatus(null), 5000);
+      setTimeout(() => setSyncStatus(null), 8000);
     }
   };
 
@@ -543,7 +547,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
                 <div className="flex items-center justify-center h-48 text-brand-gray">
                   <Loader2 className="animate-spin mr-2" size={24} /> Loading full email content...
                 </div>
-              ) : selectedEmail.bodyHtml ? (
+              ) : selectedEmail.bodyHtml && selectedEmail.bodyHtml.replace(/<[^>]*>/g, '').trim() ? (
                 <div className="prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(selectedEmail.bodyHtml) }} />
               ) : (
                 <div className="whitespace-pre-wrap text-sm text-brand-black">{selectedEmail.bodyPreview}</div>

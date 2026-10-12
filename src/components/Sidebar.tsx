@@ -2,6 +2,7 @@ import { crmService } from './crm/crmService';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../services/AuthContext';
 import { Logo } from '../constants';
+import { setViewMode } from '../lib/viewMode';
 import { 
   LayoutDashboard, 
   Ticket, 
@@ -36,7 +37,8 @@ import {
   FileText,
   Bell,
   Trash2,
-  BellOff
+  BellOff,
+  Calendar, Trophy, Network, GraduationCap, SlidersHorizontal, Construction, FileSpreadsheet,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -292,6 +294,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'activities', label: 'Activities Feed', icon: Activity, permission: permissions?.canViewSalesActivities },
     { id: 'reports', label: 'Sales Reports', icon: BarChart, permission: permissions?.canViewSalesReports },
     { id: 'plots-inventory', label: 'Plots Inventory', icon: Database, permission: permissions?.canViewSalesPlotsInventory },
+    { id: 'calendar', label: 'Calendar', icon: Calendar, permission: permissions?.canViewSalesCrm || permissions?.canViewSalesLeads },
+    { id: 'achievements', label: 'Achievements', icon: Trophy, permission: (permissions?.canViewSalesCrm || permissions?.canViewSalesLeads) && !(permissions?.canViewSalesDashboard || permissions?.canViewSalesRules) },
+    { id: 'hierarchy', label: 'Hierarchy', icon: Network, permission: permissions?.canViewSalesDashboard || permissions?.canViewSalesRules },
+    { id: 'guide', label: 'How to use', icon: GraduationCap, permission: permissions?.canViewSalesCrm || permissions?.canViewSalesLeads },
+    { id: 'contract-control', label: 'Contract Control Centre', icon: SlidersHorizontal, permission: permissions?.canViewSalesContracts },
+    { id: 'ct-blockers', label: 'Construction Blockers', icon: Construction, permission: permissions?.canViewSalesContracts },
+    { id: 'contract-import', label: 'Contract Excel', icon: FileSpreadsheet, permission: permissions?.canViewSalesContracts },
+    { id: 'ct-reports', label: 'Contract Reports', icon: BarChart, permission: permissions?.canViewSalesContracts },
     { id: 'offers', label: 'Offers', icon: FileText, permission: permissions?.canViewSalesLeads },
     { id: 'finance', label: 'Won Deals & Cash', icon: Banknote, permission: permissions?.canViewSalesFinance },
     { id: 'contracts', label: 'Contracts', icon: FileSignature, permission: permissions?.canViewSalesContracts },
@@ -334,6 +344,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <Logo height={isCollapsed ? "h-12" : "h-24"} />
             </div>
             {!isCollapsed && <h1 className="font-bold text-[11px] text-white/90 tracking-widest mt-1 uppercase whitespace-nowrap">W-CRM</h1>}
+            <button
+              onClick={() => setViewMode(user?.id, 'old')}
+              title="Switch to the old sales CRM look"
+              className="mt-2 text-[10px] font-bold text-white/80 border border-white/25 rounded-lg px-2 py-1 hover:bg-white/10 hover:text-white transition-colors whitespace-nowrap"
+            >
+              {isCollapsed ? '⇄' : '⇄ Switch to old view'}
+            </button>
           </div>
           <button 
             onClick={() => setIsOpen(false)}

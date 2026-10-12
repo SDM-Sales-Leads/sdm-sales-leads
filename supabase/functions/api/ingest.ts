@@ -379,7 +379,8 @@ export async function ingestInbox(max = 8, byUser?: string) {
     (b.data || []).forEach((r: any) => seen.add(r.email_id));
     const todo = heads.filter((h) => !seen.has(h.id));
 
-    let created = 0, processed = 0;
+    let created = 0, processed = 0, dups = 0, failed = 0;
+    const leads: { id: string; name: string }[] = [];
     for (const head of todo.slice(0, max)) {
       processed++;
       try {
@@ -389,23 +390,27 @@ export async function ingestInbox(max = 8, byUser?: string) {
         const base = { id: head.id, receivedTime: head.receivedTime, sender: head.senderAddress || head.sender, subject: head.subject, bodyPreview: text.slice(0, 4000) };
         if (!parsed.customerName && !parsed.phoneNumber) {
           await logMail(base, "Failed", { ...base, error: "Could not find a customer name or phone number" });
+          failed++;
           continue;
         }
         const dup = await findDuplicate(parsed);
         if (dup) {
           await logMail(base, "Duplicate", { ...base, parsedLeadId: dup.id, error: dup.deleted ? "Skipped: matches a lead that was deleted on purpose" : `Duplicate of ${dup.id}` });
+          dups++;
           continue;
         }
         const lead = await createLeadFromParsed(parsed, head, text, byUser);
         await logMail(base, "Success", { ...base, parsedLeadId: lead.id });
         created++;
+        leads.push({ id: lead.id, name: parsed.customerName || parsed.phoneNumber || "" });
       } catch (e: any) {
+        failed++;
         await logMail({ id: head.id, receivedTime: head.receivedTime, sender: head.senderAddress, subject: head.subject }, "Failed", {
           bodyPreview: head.bodyPreview, error: e instanceof HttpError ? e.message : "Unexpected error while reading this mail",
         });
       }
     }
-    return { newLeadsCount: created, processed, remaining: Math.max(0, todo.length - processed) };
+    return { newLeadsCount: created, processed, duplicates: dups, failed, leads, remaining: Math.max(0, todo.length - processed) };
   } finally {
     await unlock("ingest");
   }

@@ -388,7 +388,8 @@ route("GET", "/crm/webmail", async ({ c, query }) => {
 // defence in depth only — the browser sanitises again before showing it
 function stripActive(html: string) {
   return html
-    .replace(/<(script|style|iframe|object|embed|link|meta|base|form)[\s\S]*?(<\/\1>|$)/gi, "")
+    .replace(/<(script|style|iframe|object|embed|form)\b[\s\S]*?(<\/\1>|$)/gi, "")
+    .replace(/<(link|meta|base)\b[^>]*>/gi, "")
     .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
     .replace(/(href|src)\s*=\s*("|')\s*javascript:[^"']*\2/gi, "$1=$2#$2");
 }

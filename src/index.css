@@ -135,3 +135,22 @@
 .glass-sidebar::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.3);
 }
+
+/* ---- Old sales-CRM look (view toggle): same colours, fonts and layout the sales team knew. Scoped, so the new look is untouched. ---- */
+.old-skin {
+  --color-brand-red: #E01E25;
+  --color-brand-black: #1B1D22;
+  --color-brand-gray: #6C737E;
+  --color-brand-light: #F7F7F5;
+  --font-sans: "Plus Jakarta Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-sans);
+  background: #F7F7F5;
+  color: #1B1D22;
+}
+.old-skin .old-side { background:#fff; border-right:1px solid #E6E7EA; }
+.old-skin .old-nav button { display:flex; align-items:center; gap:11px; width:100%; background:none; border:none; color:#41454D; padding:11px 20px; font-size:.92rem; font-weight:600; text-align:left; border-left:3px solid transparent; cursor:pointer; }
+.old-skin .old-nav button:hover { background:#F0F1F3; color:#1B1D22; }
+.old-skin .old-nav button.active { background:#FDECED; color:#E01E25; border-left-color:#E01E25; }
+.old-skin .old-top { background:#fff; border-bottom:2px solid #E01E25; height:60px; display:flex; align-items:center; gap:14px; padding:0 26px; position:sticky; top:0; z-index:40; }
+.old-skin .old-title { font-weight:800; font-size:1rem; text-transform:uppercase; letter-spacing:.05em; }
+.old-skin .glass-card, .old-skin .card { backdrop-filter:none; }

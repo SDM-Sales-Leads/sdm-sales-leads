@@ -21,6 +21,11 @@ const CrmContracts = lazy(() => import('./CrmContracts').then(m => ({ default: m
 const CrmTargets = lazy(() => import('./CrmTargets').then(m => ({ default: m.CrmTargets })));
 const CrmExternalSales = lazy(() => import('./CrmExternalSales').then(m => ({ default: m.CrmExternalSales })));
 const CrmAudit = lazy(() => import('./CrmAudit').then(m => ({ default: m.CrmAudit })));
+const CrmCalendar = lazy(() => import('./CrmCalendar').then(m => ({ default: m.CrmCalendar })));
+const CrmHierarchy = lazy(() => import('./CrmHierarchy').then(m => ({ default: m.CrmHierarchy })));
+const CrmAchievements = lazy(() => import('./CrmAchievements').then(m => ({ default: m.CrmAchievements })));
+const CrmGuide = lazy(() => import('./CrmGuide').then(m => ({ default: m.CrmGuide })));
+const CrmContractControl = lazy(() => import('./CrmContractControl').then(m => ({ default: m.CrmContractControl })));
 const CrmOffers = lazy(() => import('./CrmOffers').then(m => ({ default: m.CrmOffers })));
 const CrmDuplicates = lazy(() => import('./CrmDuplicates').then(m => ({ default: m.CrmDuplicates })));
 import { 
@@ -217,6 +222,14 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
         {activeSubTab === 'plots-inventory' && (
           <CrmPlotsInventory />
         )}
+        {activeSubTab === 'calendar' && <CrmCalendar leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'hierarchy' && <CrmHierarchy leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'achievements' && <CrmAchievements leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'guide' && <CrmGuide leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'contract-control' && <CrmContractControl leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} view="control" />}
+        {activeSubTab === 'ct-blockers' && <CrmContractControl leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} view="blockers" />}
+        {activeSubTab === 'contract-import' && <CrmContractControl leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} view="import" />}
+        {activeSubTab === 'ct-reports' && <CrmContractControl leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} view="reports" />}
         {activeSubTab === 'offers' && <CrmOffers leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
         {activeSubTab === 'finance' && <CrmFinance leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
         {activeSubTab === 'contracts' && <CrmContracts leads={leads} onLeadsUpdated={() => afterChange()} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
