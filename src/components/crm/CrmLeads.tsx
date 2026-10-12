@@ -1595,7 +1595,7 @@ ${user.name || ''}`);
             </>
           )}
 
-          {currentRole !== 'Read Only' && (
+          {!['Read Only','Sales Rep'].includes(currentRole) && (
           <button
             onClick={() => setShowMergeModal(true)}
             className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all"
