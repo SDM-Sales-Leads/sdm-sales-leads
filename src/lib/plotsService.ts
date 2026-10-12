@@ -31,7 +31,8 @@ function normalise(p: RawPlot): Plot {
   const st = String(p.status || '').toLowerCase();
   return {
     key: String(p.key), park: p.park || p.project || '', project: p.project || '', unit: p.unit || '',
-    status: (STATUSES.has(st) ? st : 'unknown') as PlotStatus,
+    // a hold whose end date has passed is available again (the Land Bank releases it too; this covers the minutes before the next list arrives)
+    status: ((st === 'hold' && p.holdUntil && Date.parse(p.holdUntil) < Date.now()) ? 'available' : STATUSES.has(st) ? st : 'unknown') as PlotStatus,
     sector: p.sector || '', landType: p.landType || '', areaSqM: num(p.areaSqm) ?? 0,
     listPriceSqm: num(p.listPriceSqm), listTotal: num(p.listTotal),
     merged: Array.isArray(p.merged) && p.merged.length ? p.merged : null, holdUntil: p.holdUntil || null,
