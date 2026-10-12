@@ -51,10 +51,11 @@ export function mergeWinner(group: Lead[]): { lead: Lead; why: string } {
     const idx = vals.flatMap((v, i) => (v === top ? [i] : []));
     return idx.length === 1 ? idx[0] : -1;
   };
-  let i = unique(group.map((l) => t(l.firstContactAt)), 'min');                      // spoke to the client first (records without a first contact never win this)
+  // owner's rule (12 Oct 2026): the customer stays with the salesperson who was ASSIGNED the lead first
+  let i = unique(group.map((l) => t(l.assignedDate || l.date)), 'min');
+  if (i >= 0) return { lead: group[i], why: 'assigned the lead first' };
+  i = unique(group.map((l) => t(l.firstContactAt)), 'min');                          // then: spoke to the client first
   if (i >= 0) return { lead: group[i], why: 'first contact with the client' };
-  i = unique(group.map((l) => t(l.assignedDate || l.date)), 'min');
-  if (i >= 0) return { lead: group[i], why: 'received the lead first' };
   i = unique(group.map(workScore), 'max');
   if (i >= 0) return { lead: group[i], why: 'furthest along' };
   i = unique(group.map(completeness), 'max');

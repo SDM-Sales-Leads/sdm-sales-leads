@@ -277,3 +277,48 @@ export async function pageAll<T = any>(make: (from: number, to: number) => any, 
   }
   return rows;
 }
+
+// ---------------------------------------------------------------------------------------------
+// working time: workflow SLAs count WORKING hours (9 per day: 08:00-17:00 Cairo time, Sunday to Thursday), not elapsed hours
+// ---------------------------------------------------------------------------------------------
+export interface WorkWeek { start: number; end: number; days: number[] } // hours of the day, days 0=Sunday
+export const WORK_WEEK: WorkWeek = { start: 8, end: 17, days: [0, 1, 2, 3, 4] };
+const CAIRO = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Cairo", hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", weekday: "short" });
+const DOW: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+function cairoParts(ms: number) {
+  const p: Record<string, string> = {};
+  for (const x of CAIRO.formatToParts(new Date(ms))) p[x.type] = x.value;
+  return { y: +p.year, m: +p.month, d: +p.day, h: +p.hour, mi: +p.minute, dow: DOW[p.weekday] ?? 0 };
+}
+/** the instant at which Cairo wall-clock reads y-m-d h:mi (handles the summer-time offset) */
+function cairoToMs(y: number, m: number, d: number, h: number, mi: number): number {
+  const target = Date.UTC(y, m - 1, d, h, mi);
+  let guess = target;
+  for (let i = 0; i < 2; i++) {
+    const p = cairoParts(guess);
+    guess += target - Date.UTC(p.y, p.m - 1, p.d, p.h, p.mi);
+  }
+  return guess;
+}
+/** start + N working hours, skipping nights and the weekend */
+export function addWorkingHours(startMs: number, hours: number, w: WorkWeek = WORK_WEEK): number {
+  let left = Math.round(hours * 60);
+  let cur = startMs;
+  for (let guard = 0; guard < 800 && left > 0; guard++) {
+    const p = cairoParts(cur);
+    const mins = p.h * 60 + p.mi, s = w.start * 60, e = w.end * 60;
+    if (!w.days.includes(p.dow) || mins >= e) {
+      const next = new Date(Date.UTC(p.y, p.m - 1, p.d + 1));
+      cur = cairoToMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), w.start, 0);
+      continue;
+    }
+    if (mins < s) { cur = cairoToMs(p.y, p.m, p.d, w.start, 0); continue; }
+    const take = Math.min(left, e - mins);
+    cur += take * 60000; left -= take;
+    if (left > 0) {
+      const next = new Date(Date.UTC(p.y, p.m - 1, p.d + 1));
+      cur = cairoToMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), w.start, 0);
+    }
+  }
+  return cur;
+}

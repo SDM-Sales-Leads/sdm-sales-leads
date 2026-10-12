@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 // Tickets and workflow templates. Visibility, ids, SLA maths and step activation are decided HERE, not in the browser.
 import {
-  admin, pageAll, asUuid, bad, body, can, Caller, clean, forbidden, HttpError, isAdmin, isManager, logActivity, need, notFound, nowIso, rateLimit,
+  addWorkingHours, admin, pageAll, asUuid, bad, body, can, Caller, clean, forbidden, HttpError, isAdmin, isManager, logActivity, need, notFound, nowIso, rateLimit,
   rid, str, isObj,
 } from "./lib.ts";
 import { route } from "./router.ts";
@@ -88,7 +88,7 @@ route("POST", "/tickets", async ({ req, c }) => {
     t.currentStepId = first?.id || null;
     t.department = first?.responsibleRole || wf.data.department || t.department;
     const hours = (Number(wf.data.totalSLA) || 0) + (Number(wf.data.maxBufferHours) || 0);
-    if (hours > 0) t.slaDeadline = new Date(Date.now() + hours * 3600_000).toISOString();
+    if (hours > 0) t.slaDeadline = new Date(addWorkingHours(Date.now(), hours)).toISOString(); // workflow hours are WORKING hours (9 a day)
   }
   const { data: idv, error: ie } = await admin.rpc("app_next_id", { p_kind: "ticket" });
   if (ie) throw new HttpError(500, "Could not allocate a ticket number");
