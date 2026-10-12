@@ -408,7 +408,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
                         >
                           {simulationResult.leadId}
                         </button>
-                        .{simulationResult.isDuplicate ? '' : ' Duplicate check validated, queue auto-assignment algorithm triggered.'}
+                        .{simulationResult.isDuplicate ? '' : ' Duplicate check done; the routing rule is applied by the server (an assigned lead keeps the status New with its owner).'}
                       </>
                     ) : (
                       simulationResult.error

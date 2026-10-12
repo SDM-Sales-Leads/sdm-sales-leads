@@ -1,30 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../../services/AuthContext';
-import { Lead, TimelineEvent, LeadStatus, LeadPriority } from './types';
+import { Lead, TimelineEvent, LeadStatus } from './types';
 import { crmService } from './crmService';
 import { toast } from 'sonner';
 import { motion } from 'motion/react';
-import { 
-  Calendar, 
-  CheckCircle, 
-  XCircle, 
-  Clock, 
-  TrendingUp, 
-  ChevronLeft, 
-  ChevronRight, 
-  ExternalLink,
-  Phone,
-  MessageSquare,
-  Mail,
-  MapPin,
-  AlertCircle,
-  Briefcase,
-  Users,
-  Search,
-  Filter,
-  BarChart,
-  DollarSign
+import {
+  Calendar, Clock, ChevronLeft, ChevronRight, ExternalLink, Phone, MessageSquare, Mail, MapPin, AlertCircle, Briefcase, Users,
+  XCircle, CheckCircle, SkipForward, ArrowLeft, Flame, Hourglass, FileText, Wallet, ChevronDown, ChevronUp, Settings2,
 } from 'lucide-react';
+import {
+  ACTIVE_EXCLUDE, LOST_CATEGORIES, LOST_REASONS_TEAM, PIPELINE_STATUSES, REQ_DATETIME, REQ_FOLLOWUP, STATUS_GROUPS, isOpenStatus, phoneIntl, statusStage,
+} from './leadConfig';
+import {
+  DAY_LEVEL, DayBoard, DayTask, TaskKind, VIP_SLA_HOURS, NEGLECT_HOURS, CONTRACT_REMIND_DAYS, addDays, buildDayBoard, dayOf, fmtDay, fmtEGP, isEngaged,
+  localISO, pc, sourceWinRates, todayISO,
+} from './leadMetrics';
+import { InfoTip } from './CrmMetricsUi';
+import { suggestTemplate, waCompose, waFill } from './waTemplates';
 
 interface CrmMyDayProps {
   leads: Lead[];
@@ -32,1032 +24,716 @@ interface CrmMyDayProps {
   setActiveSubTab: (tab: string) => void;
 }
 
-// Local-calendar helpers (toISOString() is UTC and shifts the day for Egypt, UTC+2/+3)
-const pad2 = (n: number) => String(n).padStart(2, '0');
-const localISO = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 const parseLocalDay = (s: string) => new Date(`${s}T00:00:00`);
-// 'YYYY-MM-DD' stays as is; a full timestamp becomes its local calendar day ('' when invalid/missing)
-const dayOf = (v?: string) => {
-  if (!v) return '';
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? '' : localISO(d);
+const BATCH_KEY = 'crm_first_batch';
+const readBatch = () => { try { const n = Number(localStorage.getItem(BATCH_KEY)); if (n >= 1 && n <= 20) return Math.round(n); } catch { /* default */ } return 5; };
+const WORK_EVENTS = ['Meeting', 'Visit', 'Call', 'WhatsApp', 'Email'];
+const SLOW_STATUSES = new Set(STATUS_GROUPS.flatMap((g) => g.statuses));
+
+const LEVEL_STYLE: Record<number, string> = {
+  0: 'bg-rose-100 text-rose-800', 1: 'bg-amber-100 text-amber-800', 2: 'bg-sky-100 text-sky-800', 3: 'bg-brand-gray/15 text-brand-gray',
 };
+const FOLDS: { kind: TaskKind; title: string; tone: string; cap: number }[] = [
+  { kind: 'meeting', title: 'Meetings, site visits and call-backs today', tone: 'text-rose-600', cap: 999 },
+  { kind: 'offer', title: 'Offers waiting for our follow-up', tone: 'text-rose-600', cap: 40 },
+  { kind: 'overdue', title: 'Overdue follow-ups', tone: 'text-rose-600', cap: 40 },
+  { kind: 'followup', title: 'Follow-ups due today', tone: 'text-rose-600', cap: 999 },
+  { kind: 'owe', title: 'Waiting on me', tone: 'text-amber-600', cap: 40 },
+  { kind: 'risk', title: 'At risk', tone: 'text-amber-600', cap: 40 },
+  { kind: 'first', title: 'Never contacted (after today\'s batch)', tone: 'text-sky-600', cap: 40 },
+  { kind: 'cold', title: 'Going quiet', tone: 'text-sky-600', cap: 40 },
+  { kind: 'later', title: 'Scheduled for later', tone: 'text-brand-gray', cap: 40 },
+];
 
-export const CrmMyDay: React.FC<CrmMyDayProps> = ({
-  leads,
-  onLeadsUpdated,
-  setActiveSubTab
-}) => {
+type ModalKind = null | 'outcome' | 'log' | 'status' | 'resched';
+
+export const CrmMyDay: React.FC<CrmMyDayProps> = ({ leads, onLeadsUpdated, setActiveSubTab }) => {
   const { user } = useAuth();
-  
-  // Date and View selection state
-  const [selectedDate, setSelectedDate] = useState<string>(
-    localISO(new Date())
-  );
+  const [tab, setTab] = useState<'priority' | 'schedule'>('priority');
+  const [selectedDate, setSelectedDate] = useState<string>(todayISO());
   const [viewMode, setViewMode] = useState<'list' | 'calendar'>('list');
-
-  // Tasks
   const [tasks, setTasks] = useState<any[]>([]);
-
-  // Salespeople selection (for Admin / Manager / Leader roles)
   const [salespeople, setSalespeople] = useState<any[]>([]);
   const [selectedSalespersonId, setSelectedSalespersonId] = useState<string>('');
+  const [queueMode, setQueueMode] = useState<'follow' | 'new'>('follow');
+  const [cursor, setCursor] = useState(0);
+  const [pinned, setPinned] = useState<string | null>(null);   // lead id picked from a fold
+  const [batch, setBatch] = useState<number>(readBatch);
+  const [open, setOpen] = useState<Record<string, boolean>>({ meeting: true, offer: true, overdue: true, followup: true });
+  const [modal, setModal] = useState<ModalKind>(null);
+  const [target, setTarget] = useState<Lead | null>(null);
 
-  // Interaction Logging State
-  const [loggingLead, setLoggingLead] = useState<Lead | null>(null);
-  const [interactionType, setInteractionType] = useState<'call' | 'whatsapp' | 'email' | 'meeting' | 'visit'>('call');
-  const [interactionNotes, setInteractionNotes] = useState('');
-  const [interactionDate, setInteractionDate] = useState('');
-  const [interactionTime, setInteractionTime] = useState('');
-  const [interactionLocation, setInteractionLocation] = useState('');
-  const [interactionProjectName, setInteractionProjectName] = useState('');
+  // modal fields
+  const [outcome, setOutcome] = useState<'theirs' | 'mine' | 'send' | 'none'>('theirs');
+  const [comeBack, setComeBack] = useState(3);
+  const [outTime, setOutTime] = useState('09:00');
+  const [notes, setNotes] = useState('');
+  const [iType, setIType] = useState<'call' | 'whatsapp' | 'email' | 'meeting' | 'visit'>('call');
+  const [iDate, setIDate] = useState('');
+  const [iTime, setITime] = useState('');
+  const [iPlace, setIPlace] = useState('');
+  const [iSchedule, setISchedule] = useState(true);
+  const [stStatus, setStStatus] = useState('');
+  const [stDate, setStDate] = useState('');
+  const [stTime, setStTime] = useState('');
+  const [stNext, setStNext] = useState('');
+  const [stReason, setStReason] = useState('');
+  const [stCat, setStCat] = useState('');
+  const [fuDate, setFuDate] = useState('');
+  const [fuTime, setFuTime] = useState('');
 
-  // Follow-up Scheduling State
-  const [schedulingLead, setSchedulingLead] = useState<Lead | null>(null);
-  const [followUpDate, setFollowUpDate] = useState('');
-
-  // Load salespeople and tasks list on mount
   useEffect(() => {
-    const people = crmService.getSalesPeople();
-    setSalespeople(people);
-    if (user) {
-      setSelectedSalespersonId(String(user.id));
-    }
-    
-    // Fetch tasks
-    const allTasks = crmService.getTasks();
-    setTasks(allTasks);
+    setSalespeople(crmService.getSalesPeople());
+    if (user) setSelectedSalespersonId(String(user.id));
+    setTasks(crmService.getTasks());
   }, [user]);
 
-  // Escape closes either modal
   useEffect(() => {
-    if (!loggingLead && !schedulingLead) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setLoggingLead(null); setSchedulingLead(null); }
-    };
+    if (!modal) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setModal(null); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [loggingLead, schedulingLead]);
+  }, [modal]);
 
-  // Is current user permitted to change salesperson filter?
-  const canFilterSalespeople = () => {
-    if (!user) return false;
-    const superRoles = ['admin', 'sales manager', 'sales operation', 'infrastructure', 'development', 'finance', 'leader'];
-    const userRoleLower = (user.role || '').toLowerCase();
-    return superRoles.some(r => userRoleLower.includes(r));
-  };
-
-  // Determine salespeople options to render
-  const getSalespersonOptions = () => {
+  const roleLower = (user?.role || '').toLowerCase();
+  const canFilterSalespeople = !!user && ['admin', 'sales manager', 'sales operation', 'operation', 'leader'].some((r) => roleLower.includes(r));
+  const salesPersonOptions = useMemo(() => {
     if (!user) return [];
-    const userRoleLower = (user.role || '').toLowerCase();
-    
-    // Team Leader can only view themselves and their team members
-    if (userRoleLower.includes('leader')) {
-      return salespeople.filter(s => String(s.id) === String(user.id) || String(s.teamLeaderId) === String(user.id));
-    }
-    
-    // Other super roles can see all
+    if (roleLower.includes('leader')) return salespeople.filter((s) => String(s.id) === String(user.id) || String(s.teamLeaderId) === String(user.id));
     return salespeople;
-  };
+  }, [salespeople, user, roleLower]);
+  const activeSalesperson = salespeople.find((s) => String(s.id) === String(selectedSalespersonId)) || { id: user?.id, name: user?.name, role: user?.role };
+  const viewingSelf = !!user && String(selectedSalespersonId) === String(user.id);
 
-  const salesPersonOptions = getSalespersonOptions();
+  // ---- derived data: each is computed once per change of leads / person, never per row ----
+  const mine = useMemo(() => leads.filter((l) => String(l.assignedSalespersonId) === String(selectedSalespersonId)), [leads, selectedSalespersonId]);
+  const rates = useMemo(() => sourceWinRates(leads), [leads]);
+  const today = todayISO();
+  const board: DayBoard = useMemo(() => buildDayBoard(mine, todayISO(), Date.now(), rates), [mine, rates]);
 
-  // Selected salesperson object
-  const activeSalesperson = salespeople.find(s => String(s.id) === String(selectedSalespersonId)) || {
-    id: user?.id,
-    name: user?.name,
-    role: user?.role
-  };
-
-  // 1. Filter Leads Assigned to Selected Salesperson
-  const salespersonLeads = leads.filter(l => String(l.assignedSalespersonId) === String(selectedSalespersonId));
-
-  // 2. Compute Top Level Analytics
-  const totalAssigned = salespersonLeads.length;
-  
-  const activeLeads = salespersonLeads.filter(l => 
-    !['Won', 'Lost', 'Duplicate', 'Invalid', 'Closed'].includes(l.status)
-  );
-  
-  const wonLeads = salespersonLeads.filter(l => l.status === 'Won');
-  const lostLeads = salespersonLeads.filter(l => l.status === 'Lost');
-  // Conversion = won / (won + lost); no closed leads yet -> n/a (not 0%)
-  const closedCount = wonLeads.length + lostLeads.length;
-  const winRate: number | null = closedCount > 0 ? Math.round((wonLeads.length / closedCount) * 100) : null;
-
-  // Active pipelines status counts
-  const pipelineBreakdown = {
-    New: activeLeads.filter(l => l.status === 'New').length,
-    Assigned: activeLeads.filter(l => l.status === 'Assigned').length,
-    Contacted: activeLeads.filter(l => l.status === 'Contacted').length,
-    FollowUp: activeLeads.filter(l => l.status === 'Follow Up').length,
-    MeetingScheduled: activeLeads.filter(l => l.status === 'Meeting Scheduled').length,
-    Negotiation: activeLeads.filter(l => l.status === 'Negotiation').length,
-    QuotationSent: activeLeads.filter(l => l.status === 'Quotation Sent').length,
-    WaitingCustomer: activeLeads.filter(l => l.status === 'Waiting Customer').length,
-  };
-
-  // Lead Sources Breakdown
-  const sources = salespersonLeads.reduce((acc: {[key: string]: number}, lead) => {
-    if (!lead.source) return acc;
-    acc[lead.source] = (acc[lead.source] || 0) + 1;
-    return acc;
-  }, {});
-
-  const topSource = Object.entries(sources).sort((a,b) => b[1] - a[1])[0]?.[0] || 'N/A';
-
-  // Common Lost Reasons
-  const lostReasons = lostLeads.reduce((acc: {[key: string]: number}, lead) => {
-    if (lead.lostReason) {
-      acc[lead.lostReason] = (acc[lead.lostReason] || 0) + 1;
+  const stats = useMemo(() => {
+    let active = 0, won = 0, lost = 0, unworked = 0, working = 0, pipeline = 0, activeValue = 0, sizeSum = 0, sizeN = 0, vip = 0, high = 0;
+    const src: Record<string, number> = {}; const lostR: Record<string, number> = {};
+    for (const l of mine) {
+      const st = statusStage(l.status);
+      if (st === 'won') won++;
+      else if (st === 'lost') { lost++; const r = l.lostReason || l.lostCategory; if (r) lostR[r] = (lostR[r] || 0) + 1; }
+      if (l.source) src[l.source] = (src[l.source] || 0) + 1;
+      if (!isOpenStatus(l.status)) continue;
+      active++;
+      if (!isEngaged(l)) unworked++; else working++;
+      if (PIPELINE_STATUSES.includes(l.status)) pipeline++;
+      activeValue += Number(l.dealValue) || 0;
+      if (Number(l.requiredSize) > 0) { sizeSum += Number(l.requiredSize); sizeN++; }
+      if (l.priority === 'VIP' || l.priority === 'Urgent') vip++;
+      else if (l.priority === 'High') high++;
     }
-    return acc;
-  }, {});
+    const top = (o: Record<string, number>) => Object.entries(o).sort((a, b) => b[1] - a[1])[0]?.[0] || 'N/A';
+    return { total: mine.length, active, won, lost, unworked, working, pipeline, activeValue, avgSize: sizeN ? Math.round(sizeSum / sizeN) : null, vip, high, topSource: top(src), topLost: top(lostR), win: pc(won, won + lost) };
+  }, [mine]);
 
-  const topLostReason = Object.entries(lostReasons).sort((a,b) => b[1] - a[1])[0]?.[0] || 'N/A';
+  // ---- queues ----
+  const followQ = board.callList;
+  const newQ = useMemo(() => board.first.slice(0, batch), [board.first, batch]);
+  const mode: 'follow' | 'new' = queueMode === 'new' || (!followQ.length && newQ.length) ? 'new' : 'follow';
+  const queue = mode === 'new' ? newQ : followQ;
+  const idx = Math.min(cursor, Math.max(0, queue.length - 1));
+  const pinnedTask = pinned ? board.tasks.find((t) => t.lead.id === pinned) || null : null;
+  const hero: DayTask | null = pinnedTask || queue[idx] || null;
+  const doneN = board.doneToday;
+  const pct = queue.length + doneN === 0 ? 100 : Math.round((doneN / (queue.length + doneN)) * 100);
+  useEffect(() => { setCursor(0); setPinned(null); }, [selectedSalespersonId, queueMode]);
 
-  // Expected Total Revenue / Budget sum
-  const activeBudgetSum = activeLeads.reduce((sum, lead) => sum + (lead.budget || 0), 0);
+  // ---- schedule tab: indexes built once ----
+  const tasksByLead = useMemo(() => {
+    const m = new Map<string, any[]>();
+    tasks.forEach((t) => { if (t.leadId && t.dueDate && String(t.salespersonId) === String(activeSalesperson.id)) { const a = m.get(t.leadId) || []; a.push(t); m.set(t.leadId, a); } });
+    return m;
+  }, [tasks, activeSalesperson.id]);
+  const dayIndex = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    const put = (d: string, id: string) => { if (!d) return; let s = m.get(d); if (!s) { s = new Set(); m.set(d, s); } s.add(id); };
+    for (const l of mine) {
+      put(dayOf(l.nextFollowUpDate), l.id); put(dayOf(l.expectedClosingDate), l.id); put(dayOf(l.meetingDate), l.id); put(dayOf(l.offerDueDate), l.id);
+      if (l.timeline) for (const e of l.timeline) if (WORK_EVENTS.includes(e.type)) put(dayOf(e.timestamp), l.id);
+      const tl = tasksByLead.get(l.id); if (tl) for (const t of tl) put(dayOf(t.dueDate), l.id);
+    }
+    return m;
+  }, [mine, tasksByLead]);
+  const leadById = useMemo(() => { const m = new Map<string, Lead>(); mine.forEach((l) => m.set(l.id, l)); return m; }, [mine]);
+  const scheduleLeads = useMemo(() => [...(dayIndex.get(selectedDate) || [])].map((id) => leadById.get(id)).filter((l): l is Lead => !!l), [dayIndex, selectedDate, leadById]);
 
-  // SLA violation status counts
-  const slaViolatedCount = activeLeads.filter(l => l.slaStatus === 'Violated').length;
-
-  // 3. Bottom Part: Filter Lead Schedule for the Selected Date
-  const getWorkScheduledForDate = () => {
-    // Collect all leads that have something scheduled for selectedDate
-    const leadsWithWork = salespersonLeads.filter(lead => {
-      if (lead.nextFollowUpDate === selectedDate) return true;
-      if (lead.expectedClosingDate && dayOf(lead.expectedClosingDate) === selectedDate) return true;
-      
-      if (lead.timeline && Array.isArray(lead.timeline)) {
-        const hasEventOnDate = lead.timeline.some(event => {
-          if (['Meeting', 'Visit', 'Call', 'WhatsApp', 'Email'].includes(event.type)) {
-            const eventDate = dayOf(event.timestamp);
-            return eventDate === selectedDate;
-          }
-          return false;
-        });
-        if (hasEventOnDate) return true;
+  const leadTasksForDate = (lead: Lead) => {
+    const out: { type: string; title: string; time?: string; details?: string }[] = [];
+    (tasksByLead.get(lead.id) || []).filter((t) => dayOf(t.dueDate) === selectedDate).forEach((t) => {
+      let time = 'All day'; try { time = new Date(t.dueDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { /* keep */ }
+      out.push({ type: 'Task', title: t.title, time, details: t.description });
+    });
+    if (dayOf(lead.meetingDate) === selectedDate) out.push({ type: 'Meeting', title: `${lead.status}${lead.meetingTime ? ' at ' + lead.meetingTime : ''}`, details: lead.notes ? lead.notes.slice(0, 160) : undefined });
+    if (dayOf(lead.nextFollowUpDate) === selectedDate) out.push({ type: 'Follow-Up', title: 'Scheduled next follow-up', time: lead.nextFollowUpTime || undefined, details: 'Contact the lead to discuss open questions' });
+    if (dayOf(lead.offerDueDate) === selectedDate) out.push({ type: 'Follow-Up', title: 'Offer follow-up due', details: 'The offer was sent: ask for feedback' });
+    if (lead.expectedClosingDate && dayOf(lead.expectedClosingDate) === selectedDate) out.push({ type: 'Deadline', title: 'Expected closing date', details: 'Action needed to move the negotiation to Won' });
+    (lead.timeline || []).forEach((e) => {
+      if (WORK_EVENTS.includes(e.type) && dayOf(e.timestamp) === selectedDate) {
+        let time = 'All day'; try { time = new Date(e.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { /* keep */ }
+        out.push({ type: e.type, title: `${e.type} logged: ${e.title}`, time, details: e.description });
       }
-
-      // Check explicit tasks
-      const hasTasks = tasks.some(t => t.leadId === lead.id && t.dueDate && dayOf(t.dueDate) === selectedDate && String(t.salespersonId) === String(activeSalesperson.id));
-      if (hasTasks) return true;
-
-      return false;
     });
-    return leadsWithWork;
+    return out;
   };
 
-  const scheduleLeads = getWorkScheduledForDate();
+  const shiftDay = (n: number) => setSelectedDate(addDays(selectedDate || todayISO(), n));
 
-  // Helper to retrieve the specific activities scheduled for a lead on the selected date
-  const getLeadTasksForDate = (lead: Lead) => {
-    const dailyTasks: { type: string; title: string; time?: string; details?: string }[] = [];
-
-    // Explicit tasks
-    const leadTasks = tasks.filter(t => t.leadId === lead.id && t.dueDate && dayOf(t.dueDate) === selectedDate && String(t.salespersonId) === String(activeSalesperson.id));
-    leadTasks.forEach(task => {
-      let eventTime = 'All day';
-      try {
-        eventTime = new Date(task.dueDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      } catch (e) {}
-      dailyTasks.push({
-        type: 'Task',
-        title: task.title,
-        time: eventTime,
-        details: task.description
-      });
-    });
-
-    if (lead.nextFollowUpDate === selectedDate) {
-      dailyTasks.push({
-        type: 'Follow-Up',
-        title: 'Scheduled Next Follow-Up',
-        details: 'Contact lead to discuss active inquiries'
-      });
-    }
-
-    if (lead.expectedClosingDate && dayOf(lead.expectedClosingDate) === selectedDate) {
-      dailyTasks.push({
-        type: 'Deadline',
-        title: 'Expected Closing Date',
-        details: 'Action required to push negotiation to Won status'
-      });
-    }
-
-    if (lead.timeline && Array.isArray(lead.timeline)) {
-      lead.timeline.forEach(event => {
-        if (dayOf(event.timestamp) === selectedDate) {
-          if (['Meeting', 'Visit', 'Call', 'WhatsApp', 'Email'].includes(event.type)) {
-            let eventTime = 'All day';
-            try {
-              eventTime = new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            } catch (e) {}
-
-            dailyTasks.push({
-              type: event.type,
-              title: `${event.type} Logged/Scheduled: ${event.title}`,
-              time: eventTime,
-              details: event.description
-            });
-          }
-        }
-      });
-    }
-
-    return dailyTasks;
+  // ---- writes (always through crmService.updateLead; the server enforces the rules and shows its own reason) ----
+  const apply = useCallback((id: string, build: (fresh: Lead) => Partial<Lead>, ev?: TimelineEvent): boolean => {
+    const fresh = crmService.getLeads().find((l) => l.id === id);
+    if (!fresh) { toast.error('This lead was not found (it may have been merged or removed).'); return false; }
+    const upd = build(fresh);
+    upd.timeline = [...(fresh.timeline || []), ...(ev ? [ev] : [])];
+    try { crmService.updateLead(id, upd, user?.name || 'Agent'); } catch (e: any) { toast.error(e?.message || 'Could not save the change.'); return false; }
+    onLeadsUpdated();
+    return true;
+  }, [user, onLeadsUpdated]);
+  const mkEvent = (type: TimelineEvent['type'], title: string, description: string, ts = new Date().toISOString()): TimelineEvent => ({
+    id: `${type.toLowerCase()}_${Math.random().toString(36).slice(2, 11)}`, timestamp: ts, type, user: user?.name || 'Agent', title, description,
+  });
+  const pushActivity = (type: 'Call' | 'Email' | 'WhatsApp' | 'Meeting' | 'Visit', lead: Lead, ts: string, text: string) => {
+    if (!user) return;
+    const acts = crmService.getActivities();
+    acts.unshift({ id: 'act_' + Math.random().toString(36).slice(2, 11), salespersonId: String(user.id), salespersonName: user.name || '—', type, leadId: lead.id, leadName: lead.customerName, timestamp: ts, notes: text });
+    crmService.saveActivities(acts);
   };
+  const isOwner = (l: Lead) => !!user && String(l.assignedSalespersonId) === String(user.id);
+  const touched = (l: Lead): Partial<Lead> => ({ lastContactDate: todayISO(), ...(isOwner(l) && !l.firstContactAt ? { firstContactAt: new Date().toISOString() } : {}) });
 
-  // Handle Date Shifts
-  const handlePrevDay = () => {
-    const d = parseLocalDay(selectedDate || localISO(new Date()));
-    d.setDate(d.getDate() - 1);
-    setSelectedDate(localISO(d));
-  };
-
-  const handleNextDay = () => {
-    const d = parseLocalDay(selectedDate || localISO(new Date()));
-    d.setDate(d.getDate() + 1);
-    setSelectedDate(localISO(d));
-  };
-
-  const handleToday = () => {
-    setSelectedDate(localISO(new Date()));
-  };
-
-  // Navigates directly to the lead in CRM
-  const handleViewLeadDetails = (leadId: string) => {
-    localStorage.setItem('crm_selected_lead_id_from_notification', leadId);
-    window.dispatchEvent(new CustomEvent('crm-select-lead', { detail: { leadId } }));
+  const openLead = (id: string) => {
+    window.dispatchEvent(new CustomEvent('crm-select-lead', { detail: { leadId: id } }));
+    try { localStorage.setItem('crm_selected_lead_id_from_notification', id); } catch { /* ignore */ }
     setActiveSubTab('leads');
-    toast.success(`Opening Lead ${leadId} details...`);
   };
 
-  // Action: Save Next Follow-up Date
-  const handleSaveFollowUpDate = () => {
-    if (!schedulingLead) return;
-    if (followUpDate && !/^\d{4}-\d{2}-\d{2}$/.test(followUpDate)) {
-      toast.error('Choose a valid follow-up date.');
-      return;
-    }
-    
-    // Re-read the stored leads right before writing so other edits are not overwritten by a stale prop copy
-    const updatedLeads = crmService.getLeads().map(l => {
-      if (l.id === schedulingLead.id) {
-        // Add log event to timeline
-        const timelineEvent: TimelineEvent = {
-          id: 'followup_' + Math.random().toString(36).substr(2, 9),
-          timestamp: new Date().toISOString(),
-          type: 'Comment',
-          user: user?.name || 'Agent',
-          title: `Scheduled Follow-Up Date`,
-          description: followUpDate ? `Next action date set to ${followUpDate}` : 'Next action date cleared'
-        };
-
-        return {
-          ...l,
-          nextFollowUpDate: followUpDate || undefined,
-          lastUpdated: new Date().toISOString(),
-          status: l.status === 'New' || l.status === 'Assigned' ? 'Follow Up' : l.status,
-          timeline: [...(l.timeline || []), timelineEvent]
-        };
-      }
-      return l;
-    });
-
-    crmService.saveLeads(updatedLeads);
-    onLeadsUpdated();
-    setSchedulingLead(null);
-    setFollowUpDate('');
-    toast.success(`Scheduled follow-up date for lead ${schedulingLead.id}`);
-  };
-
-  // Action: Open Log Interaction Form
-  const openLogInteraction = (lead: Lead) => {
-    setLoggingLead(lead);
-    setInteractionType('call');
-    setInteractionDate(localISO(new Date()));
-    
+  const openModal = (kind: Exclude<ModalKind, null>, l: Lead) => {
+    setTarget(l); setNotes(''); setModal(kind);
     const now = new Date();
-    const hours = String(now.getHours()).padStart(2, '0');
-    const mins = String(now.getMinutes()).padStart(2, '0');
-    setInteractionTime(`${hours}:${mins}`);
-    setInteractionNotes('');
-    setInteractionLocation('');
-    setInteractionProjectName('');
+    if (kind === 'outcome') { setOutcome('theirs'); setComeBack(3); setOutTime('09:00'); }
+    if (kind === 'log') { setIType('call'); setIDate(todayISO()); setITime(`${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`); setIPlace(''); setISchedule(true); }
+    if (kind === 'status') { setStStatus(''); setStDate(l.meetingDate || addDays(todayISO(), 1)); setStTime(l.meetingTime || '10:00'); setStNext(l.nextFollowUpDate || addDays(todayISO(), 3)); setStReason(''); setStCat(''); }
+    if (kind === 'resched') { setFuDate(dayOf(l.nextFollowUpDate) || addDays(todayISO(), 1)); setFuTime(l.nextFollowUpTime || ''); }
   };
 
-  // Action: Submit Logged Interaction
-  const handleSaveInteraction = () => {
-    if (!loggingLead) return;
-    const when = new Date(`${interactionDate}T${interactionTime}:00`);
-    if (!interactionDate || !interactionTime || isNaN(when.getTime())) {
-      toast.error('Enter a valid date and time for the interaction.');
-      return;
-    }
-    if (!user) {
-      toast.error('You must be signed in to log an interaction.');
-      return;
-    }
-
-    let desc = interactionNotes;
-    let taskTitle = `${interactionType.charAt(0).toUpperCase() + interactionType.slice(1)} - ${loggingLead.customerName}`;
-
-    if (interactionType === 'meeting') {
-      desc += interactionLocation ? `\nLocation: ${interactionLocation}` : '';
-    } else if (interactionType === 'visit') {
-      desc += interactionProjectName ? `\nProject: ${interactionProjectName}` : '';
-    }
-
-    const timelineEvent: TimelineEvent = {
-      id: 'inter_' + Math.random().toString(36).substr(2, 9),
-      timestamp: when.toISOString(),
-      type: (interactionType === 'call' ? 'Call' : 
-             interactionType === 'email' ? 'Email' :
-             interactionType === 'whatsapp' ? 'WhatsApp' :
-             interactionType === 'meeting' ? 'Meeting' : 'Visit') as any,
-      user: user?.name || 'Agent',
-      title: taskTitle,
-      description: desc
-    };
-
-    const updatedLeads = crmService.getLeads().map(l => {
-      if (l.id === loggingLead.id) {
-        let nextStatus = l.status;
-        if (interactionType === 'call' || interactionType === 'whatsapp' || interactionType === 'email') {
-          if (l.status === 'Assigned' || l.status === 'New') nextStatus = 'Contacted';
-        } else if (interactionType === 'meeting') {
-          // never reopen a closed lead or move one already past the meeting stage backwards
-          if (['New', 'Assigned', 'Contacted', 'Follow Up', 'No Answer', 'Waiting Customer'].includes(l.status)) nextStatus = 'Meeting Scheduled';
-        }
-
-        return {
-          ...l,
-          status: nextStatus,
-          lastUpdated: new Date().toISOString(),
-          timeline: [...(l.timeline || []), timelineEvent]
-        };
-      }
-      return l;
-    });
-
-    // Pushes to activity log as well
-    const activities = crmService.getActivities();
-    activities.unshift({
-      id: 'act_' + Math.random().toString(36).substr(2, 9),
-      salespersonId: String(user.id),
-      salespersonName: user.name || '—',
-      type: (interactionType === 'call' ? 'Call' : interactionType === 'email' ? 'Email' : interactionType === 'whatsapp' ? 'WhatsApp' : interactionType === 'meeting' ? 'Meeting' : 'Visit') as any,
-      leadId: loggingLead.id,
-      leadName: loggingLead.customerName,
-      timestamp: when.toISOString(),
-      notes: desc,
-    });
-    crmService.saveActivities(activities);
-
-    crmService.saveLeads(updatedLeads);
-    onLeadsUpdated();
-    setLoggingLead(null);
-    toast.success(`Logged ${interactionType} interaction for lead ${loggingLead.id}`);
+  const saveOutcome = () => {
+    if (!target) return;
+    const next = addDays(todayISO(), comeBack);
+    const label = { theirs: 'Spoke to the client: they will come back to us', mine: 'I need to call again', send: 'I owe the client something', none: 'Contact made, no next step' }[outcome];
+    if (outcome === 'mine' && !/^\d{2}:\d{2}$/.test(outTime)) { toast.error('Call Back needs the time of the call.'); return; }
+    if (outcome === 'mine' && !notes.trim()) { toast.error('Call Back needs a short note.'); return; }
+    const ok = apply(target.id, (l) => ({
+      ...touched(l),
+      ...(outcome === 'theirs' ? { status: 'Client Will Call Back' as LeadStatus, nextFollowUpDate: next, meetingDate: '', meetingTime: '' } : {}),
+      ...(outcome === 'mine' ? { status: 'Call Back' as LeadStatus, nextFollowUpDate: next, meetingDate: next, meetingTime: outTime } : {}),
+      ...(outcome === 'send' ? { nextFollowUpDate: next } : {}),
+      ...(outcome === 'none' ? { nextFollowUpDate: '' } : {}),
+    }), mkEvent('Call', label, `${notes.trim()}${outcome !== 'none' ? `${notes.trim() ? '\n' : ''}Next action: ${fmtDay(next)}` : ''}`));
+    if (ok) { pushActivity('Call', target, new Date().toISOString(), `${label}. ${notes.trim()}`.trim()); toast.success(`Logged for ${target.customerName || target.id}`); setModal(null); setPinned(null); }
   };
 
+  const saveInteraction = () => {
+    if (!target) return;
+    const when = new Date(`${iDate}T${iTime}:00`);
+    if (!iDate || !iTime || Number.isNaN(when.getTime())) { toast.error('Enter a valid date and time.'); return; }
+    const typeName = { call: 'Call', whatsapp: 'WhatsApp', email: 'Email', meeting: 'Meeting', visit: 'Visit' }[iType] as 'Call' | 'WhatsApp' | 'Email' | 'Meeting' | 'Visit';
+    let desc = notes.trim();
+    if (iType === 'meeting' && iPlace) desc += `${desc ? '\n' : ''}Location: ${iPlace}`;
+    if (iType === 'visit' && iPlace) desc += `${desc ? '\n' : ''}Project: ${iPlace}`;
+    const setSlot = (iType === 'meeting' || iType === 'visit') && iSchedule && iDate >= todayISO();
+    if (setSlot && !desc) { toast.error('A scheduled meeting needs a short note (agenda or place).'); return; }
+    const ok = apply(target.id, (l) => ({
+      ...touched(l),
+      ...(setSlot ? { status: (iType === 'meeting' ? 'Scheduled Meeting' : 'Site Visit Scheduled') as LeadStatus, meetingDate: iDate, meetingTime: iTime, nextFollowUpDate: l.nextFollowUpDate || iDate } : {}),
+    }), mkEvent(typeName, `${typeName} - ${target.customerName}`, desc, when.toISOString()));
+    if (ok) { pushActivity(typeName, target, when.toISOString(), desc); toast.success(`${typeName} logged for ${target.id}`); setModal(null); }
+  };
+
+  const saveStatus = () => {
+    if (!target || !stStatus) { toast.error('Choose a status.'); return; }
+    const needsSlot = REQ_DATETIME.includes(stStatus);
+    const needsNext = REQ_FOLLOWUP.includes(stStatus);
+    if (needsSlot && (!stDate || !stTime || !notes.trim())) { toast.error(`${stStatus} needs a date, a time and a note.`); return; }
+    if (needsNext && !stNext) { toast.error(`${stStatus} needs the next follow-up date.`); return; }
+    if (stStatus === 'Lost' && !stReason) { toast.error('Lost needs the reason.'); return; }
+    const ok = apply(target.id, (l) => ({
+      ...touched(l),
+      status: stStatus as LeadStatus,
+      meetingDate: needsSlot ? stDate : '', meetingTime: needsSlot ? stTime : '',
+      ...(needsSlot ? { nextFollowUpDate: l.nextFollowUpDate || stDate } : {}),
+      ...(needsNext ? { nextFollowUpDate: stNext } : {}),
+      ...(stStatus === 'Lost' ? { lostReason: stReason, lostCategory: stCat || l.lostCategory } : {}),
+      ...(ACTIVE_EXCLUDE.includes(stStatus) ? { nextFollowUpDate: '' } : {}),
+    }), notes.trim() ? mkEvent('Comment', `Status note: ${stStatus}`, notes.trim()) : undefined);
+    if (ok) { toast.success(`Status set to ${stStatus}`); setModal(null); setPinned(null); }
+  };
+
+  const saveResched = () => {
+    if (!target) return;
+    if (fuDate && !/^\d{4}-\d{2}-\d{2}$/.test(fuDate)) { toast.error('Choose a valid follow-up date.'); return; }
+    const ok = apply(target.id, () => ({ nextFollowUpDate: fuDate || '', nextFollowUpTime: fuTime || '' }),
+      mkEvent('Comment', 'Follow-up rescheduled', fuDate ? `Next action set to ${fuDate}${fuTime ? ' ' + fuTime : ''}` : 'Next action cleared'));
+    if (ok) { toast.success(fuDate ? `Follow-up set to ${fmtDay(fuDate)}` : 'Follow-up cleared'); setModal(null); setPinned(null); }
+  };
+
+  const setBatchSize = (n: number) => { const v = Math.min(20, Math.max(1, n)); setBatch(v); try { localStorage.setItem(BATCH_KEY, String(v)); } catch { /* ignore */ } };
+
+  // ---- small render helpers ----
+  const waHref = (l: Lead) => {
+    const num = phoneIntl(l.phoneNumber).replace('+', '');
+    if (!num) return '';
+    const text = waFill(waCompose(suggestTemplate(l)), l, user?.name || '', { date: dayOf(l.meetingDate) ? fmtDay(dayOf(l.meetingDate)) : undefined, time: l.meetingTime || undefined });
+    return `https://wa.me/${num}?text=${encodeURIComponent(text)}`;
+  };
+  const telHref = (l: Lead) => { const n = phoneIntl(l.phoneNumber); return n ? `tel:${n}` : ''; };
+  const priorityPill = (p: string) => (p === 'VIP' || p === 'Urgent' ? 'bg-purple-100 text-purple-800' : p === 'High' ? 'bg-orange-100 text-orange-700' : p === 'Low' ? 'bg-gray-100 text-gray-600' : 'bg-blue-100 text-blue-700');
+  const sub = (l: Lead) => [l.companyName ? l.customerName : '', l.project, l.source].filter(Boolean).join(' · ');
+  const fieldCls = 'w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black';
+  const lbl = 'block text-[10px] uppercase font-bold text-brand-gray mb-1.5';
+
+  const QuickActions: React.FC<{ l: Lead; compact?: boolean }> = ({ l, compact }) => {
+    const tel = telHref(l); const wa = waHref(l);
+    const b = 'px-2.5 py-1.5 rounded-xl text-[10px] font-extrabold flex items-center justify-center gap-1 transition-all';
+    return (
+      <div className={`flex ${compact ? 'flex-row flex-wrap' : 'flex-row md:flex-col'} gap-1.5`}>
+        {tel ? <a href={tel} className={`${b} bg-emerald-600 text-white hover:opacity-90`}><Phone size={12} />Call</a> : <span className={`${b} bg-brand-gray/10 text-brand-gray`} title="No usable phone number"><Phone size={12} />No phone</span>}
+        {wa && <a href={wa} target="_blank" rel="noopener noreferrer" className={`${b} bg-green-500 text-white hover:opacity-90`}><MessageSquare size={12} />WhatsApp</a>}
+        <button onClick={() => openModal('log', l)} className={`${b} bg-brand-red text-white hover:opacity-90`}><Calendar size={12} />Log</button>
+        <button onClick={() => openModal('status', l)} className={`${b} bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black`}><CheckCircle size={12} />Status</button>
+        <button onClick={() => openModal('resched', l)} className={`${b} bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black`}><Clock size={12} />Reschedule</button>
+        <button onClick={() => openLead(l.id)} className={`${b} bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black`}><ExternalLink size={12} />Open</button>
+      </div>
+    );
+  };
+
+  const TaskRow: React.FC<{ t: DayTask }> = ({ t }) => (
+    <div className="flex items-center gap-3 py-2 px-3 hover:bg-brand-gray/5 rounded-xl cursor-pointer" onClick={() => { setPinned(t.lead.id); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
+      <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full shrink-0 ${LEVEL_STYLE[t.level]}`}>{DAY_LEVEL[t.level].split(' ')[0]}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-bold text-brand-black truncate">{t.lead.companyName || t.lead.customerName || t.lead.id} <span className="font-normal text-brand-gray">· {t.lead.status}</span></p>
+        <p className="text-[10px] text-brand-gray truncate">{t.why}</p>
+      </div>
+      {t.sla && <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 shrink-0">{t.sla === 'vip' ? 'VIP SLA' : 'Neglected'}</span>}
+      <span className="font-mono text-[10px] text-brand-red shrink-0">{t.lead.id}</span>
+    </div>
+  );
+
+  // =============================================================================================
   return (
     <div className="space-y-6" id="crm-my-day-workspace">
-      
-      {/* HEADER SECTION */}
+      {/* header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bento-card">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-brand-black dark:text-white">My Tasks</h2>
           <p className="text-xs text-brand-gray dark:text-white/60 mt-1">
-            Focus workspace for {activeSalesperson.name} ({activeSalesperson.role || 'Sales Rep'}). Streamline today's interactions, follow-ups, and conversions.
+            {viewingSelf ? 'Your day' : `Day of ${activeSalesperson.name}`}: who to call first, what is due, what is waiting for you. One task per lead, best first.
           </p>
         </div>
-
-        <div className="flex items-center gap-3">
-          {/* View Toggle */}
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="flex bg-brand-gray/10 dark:bg-white/10 rounded-xl p-1">
-            <button
-              onClick={() => setViewMode('list')}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${viewMode === 'list' ? 'bg-white dark:bg-brand-black text-brand-black dark:text-white shadow-sm' : 'text-brand-gray dark:text-white/60 hover:text-brand-black dark:hover:text-white'}`}
-            >
-              List View
-            </button>
-            <button
-              onClick={() => setViewMode('calendar')}
-              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${viewMode === 'calendar' ? 'bg-white dark:bg-brand-black text-brand-black dark:text-white shadow-sm' : 'text-brand-gray dark:text-white/60 hover:text-brand-black dark:hover:text-white'}`}
-            >
-              Calendar View
-            </button>
+            {(['priority', 'schedule'] as const).map((k) => (
+              <button key={k} onClick={() => setTab(k)} className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${tab === k ? 'bg-white dark:bg-brand-black text-brand-black dark:text-white shadow-sm' : 'text-brand-gray dark:text-white/60'}`}>
+                {k === 'priority' ? 'Priority list' : 'Schedule & calendar'}
+              </button>
+            ))}
           </div>
-
-          {/* Salesperson Selector for Admins / Team Leaders */}
-        {canFilterSalespeople() && salesPersonOptions.length > 1 && (
-          <div className="flex items-center gap-2 bg-brand-gray/5 dark:bg-white/5 px-3 py-1.5 rounded-xl border border-brand-gray/10 dark:border-white/10">
-            <Users size={14} className="text-brand-gray dark:text-white/40" />
-            <select
-              value={selectedSalespersonId}
-              onChange={(e) => setSelectedSalespersonId(e.target.value)}
-              className="bg-transparent text-brand-black dark:text-white text-xs font-bold focus:outline-none border-none cursor-pointer pr-4"
-            >
-              {salesPersonOptions.map((person) => (
-                <option key={person.id} value={person.id} className="bg-white dark:bg-brand-black text-brand-black dark:text-white">
-                  {person.name} ({person.role || 'Sales Rep'})
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+          {canFilterSalespeople && salesPersonOptions.length > 1 && (
+            <div className="flex items-center gap-2 bg-brand-gray/5 dark:bg-white/5 px-3 py-1.5 rounded-xl border border-brand-gray/10 dark:border-white/10">
+              <Users size={14} className="text-brand-gray dark:text-white/40" />
+              <select value={selectedSalespersonId} onChange={(e) => setSelectedSalespersonId(e.target.value)} className="bg-transparent text-brand-black dark:text-white text-xs font-bold focus:outline-none border-none cursor-pointer pr-4">
+                {salesPersonOptions.map((p) => <option key={p.id} value={p.id} className="bg-white dark:bg-brand-black text-brand-black dark:text-white">{p.name} ({p.role || 'Sales Rep'})</option>)}
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* TOP ROW: ANALYSIS AND PERFORMANCE CARDS (User-Specific Only) */}
+      {/* summary cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        
-        {/* CARD 1: TOTAL LEADS & PIPELINE PROGRESS */}
-        <div className="bento-card relative overflow-hidden" id="card-total-leads">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-brand-red/5 rounded-full -mr-8 -mt-8"></div>
-          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">
-            My CRM Leads
-          </span>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-brand-black dark:text-white">{totalAssigned}</span>
-            <span className="text-xs text-brand-gray dark:text-white/60">Assigned Total</span>
-          </div>
-          
-          <div className="mt-4 space-y-2">
-            <div className="flex justify-between items-center text-[10px] font-semibold">
-              <span className="text-brand-gray dark:text-white/60">Active Pipeline</span>
-              <span className="text-brand-red font-bold">{activeLeads.length} Leads</span>
-            </div>
-            
-            {/* Tiny Progress Bar Distribution */}
-            <div className="h-1.5 w-full bg-brand-gray/10 dark:bg-white/10 rounded-full flex overflow-hidden">
-              <div 
-                className="bg-sky-500 h-full" 
-                title={`New: ${pipelineBreakdown.New + pipelineBreakdown.Assigned}`}
-                style={{ width: `${totalAssigned > 0 ? ((pipelineBreakdown.New + pipelineBreakdown.Assigned) / totalAssigned) * 100 : 0}%` }}
-              ></div>
-              <div 
-                className="bg-indigo-500 h-full" 
-                title={`Contacted: ${pipelineBreakdown.Contacted}`}
-                style={{ width: `${totalAssigned > 0 ? (pipelineBreakdown.Contacted / totalAssigned) * 100 : 0}%` }}
-              ></div>
-              <div 
-                className="bg-amber-500 h-full" 
-                title={`Follow Up: ${pipelineBreakdown.FollowUp}`}
-                style={{ width: `${totalAssigned > 0 ? (pipelineBreakdown.FollowUp / totalAssigned) * 100 : 0}%` }}
-              ></div>
-              <div 
-                className="bg-emerald-500 h-full" 
-                title={`Won: ${wonLeads.length}`}
-                style={{ width: `${totalAssigned > 0 ? (wonLeads.length / totalAssigned) * 100 : 0}%` }}
-              ></div>
-            </div>
-            
-            <div className="flex gap-2 text-[8px] font-extrabold justify-between text-brand-gray dark:text-white/40 uppercase mt-1">
-              <span className="text-sky-500">Unworked ({pipelineBreakdown.New + pipelineBreakdown.Assigned})</span>
-              <span className="text-amber-500">FollowUp ({pipelineBreakdown.FollowUp})</span>
-              <span className="text-emerald-500">Won ({wonLeads.length})</span>
-            </div>
+        <div className="bento-card relative overflow-hidden">
+          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">My leads <InfoTip text="Leads assigned to this person. Open = not Won, Lost, Not Interested, Low Budget or Wrong Number. Not yet worked = open leads nobody has contacted." /></span>
+          <div className="flex items-baseline gap-2"><span className="text-3xl font-black text-brand-black dark:text-white">{stats.total}</span><span className="text-xs text-brand-gray">assigned</span></div>
+          <div className="mt-3 space-y-1 text-[10px] font-semibold text-brand-gray">
+            <div className="flex justify-between"><span>Open</span><span className="text-brand-red font-bold">{stats.active}</span></div>
+            <div className="flex justify-between"><span>Not yet worked</span><span className="font-bold text-sky-600">{stats.unworked}</span></div>
+            <div className="flex justify-between"><span>In offer / meeting / negotiation</span><span className="font-bold text-amber-600">{stats.pipeline}</span></div>
+            <div className="flex justify-between"><span>Won</span><span className="font-bold text-emerald-600">{stats.won}</span></div>
           </div>
         </div>
-
-        {/* CARD 2: PIPELINE VALUE & SOURCE STRENGTH */}
-        <div className="bento-card relative overflow-hidden" id="card-pipeline-value">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full -mr-8 -mt-8"></div>
-          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">
-            Active Pipeline Value
-          </span>
-          <div className="flex items-baseline gap-1">
-            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
-              {activeBudgetSum > 0 ? activeBudgetSum.toLocaleString('en-US') : '—'}
-            </span>
-            {activeBudgetSum > 0 && <span className="text-[10px] font-bold text-brand-gray dark:text-white/60">USD/EGP</span>}
-          </div>
-
-          <div className="mt-5 pt-3 border-t border-brand-gray/10 dark:border-white/10 space-y-1 text-[10px] font-semibold text-brand-gray dark:text-white/60">
-            <div className="flex justify-between">
-              <span>Top Sourcing Channel:</span>
-              <span className="font-extrabold text-brand-black dark:text-white">{topSource}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Average Size target:</span>
-              <span className="font-extrabold text-brand-black dark:text-white">
-                {(() => {
-                  // Only leads that state a size count; none -> n/a
-                  const sized = activeLeads.filter(l => Number(l.requiredSize) > 0);
-                  return sized.length > 0
-                    ? `${Math.round(sized.reduce((acc, l) => acc + Number(l.requiredSize), 0) / sized.length).toLocaleString('en-US')} sqm`
-                    : '—';
-                })()}
-              </span>
-            </div>
+        <div className="bento-card">
+          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">Open pipeline value <InfoTip text="Sum of the deal value of open leads that carry one. Leads without a value add nothing, so this understates until values are typed." /></span>
+          <span className="text-2xl font-black text-emerald-600">{stats.activeValue > 0 ? fmtEGP(stats.activeValue) : '—'}</span>
+          <div className="mt-4 pt-3 border-t border-brand-gray/10 space-y-1 text-[10px] font-semibold text-brand-gray">
+            <div className="flex justify-between"><span>Top source</span><span className="font-extrabold text-brand-black dark:text-white">{stats.topSource}</span></div>
+            <div className="flex justify-between"><span>Average size asked</span><span className="font-extrabold text-brand-black dark:text-white">{stats.avgSize ? `${stats.avgSize.toLocaleString('en-US')} sqm` : '—'}</span></div>
           </div>
         </div>
-
-        {/* CARD 3: SUCCESS & WIN RATE */}
-        <div className="bento-card relative overflow-hidden" id="card-win-rate">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-full -mr-8 -mt-8"></div>
-          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">
-            Sales Success Metrics
-          </span>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-indigo-600 dark:text-indigo-400">{winRate === null ? '—' : `${winRate}%`}</span>
-            <span className="text-xs text-brand-gray dark:text-white/60">Conversion Rate</span>
-          </div>
-
-          <div className="mt-5 pt-3 border-t border-brand-gray/10 dark:border-white/10 flex justify-between text-[10px] font-extrabold text-center">
-            <div className="flex-1 border-r border-brand-gray/10 dark:border-white/10">
-              <span className="text-emerald-500 block text-base">{wonLeads.length}</span>
-              <span className="text-[8px] uppercase text-brand-gray dark:text-white/40">Closed Won</span>
-            </div>
-            <div className="flex-1">
-              <span className="text-rose-500 block text-base">{lostLeads.length}</span>
-              <span className="text-[8px] uppercase text-brand-gray dark:text-white/40">Closed Lost</span>
-            </div>
+        <div className="bento-card">
+          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">Win rate <InfoTip text="Won ÷ (Won + Lost) of this person's leads. Not Interested and Low Budget are not counted here." /></span>
+          <span className="text-3xl font-black text-indigo-600">{stats.win == null ? '—' : `${Math.round(stats.win)}%`}</span>
+          <div className="mt-4 pt-3 border-t border-brand-gray/10 flex justify-between text-center text-[10px] font-extrabold">
+            <div className="flex-1"><span className="text-emerald-500 block text-base">{stats.won}</span><span className="text-[8px] uppercase text-brand-gray">Won</span></div>
+            <div className="flex-1"><span className="text-rose-500 block text-base">{stats.lost}</span><span className="text-[8px] uppercase text-brand-gray">Lost</span></div>
           </div>
         </div>
-
-        {/* CARD 4: PIPELINE COMPLIANCE & RISK */}
-        <div className="bento-card relative overflow-hidden" id="card-risk-analysis">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-rose-500/5 rounded-full -mr-8 -mt-8"></div>
-          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">
-            Compliance & Loss Risks
-          </span>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-rose-600 dark:text-rose-400">{slaViolatedCount}</span>
-            <span className="text-xs text-brand-gray dark:text-white/60">SLA Violations</span>
-          </div>
-
-          <div className="mt-5 pt-3 border-t border-brand-gray/10 dark:border-white/10 space-y-1 text-[10px] font-semibold text-brand-gray dark:text-white/60">
-            <div className="flex justify-between">
-              <span>Main Reason for Loss:</span>
-              <span className="font-extrabold text-rose-500">{topLostReason}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>High / Urgent Priority:</span>
-              <span className="font-extrabold text-brand-black dark:text-white">
-                {activeLeads.filter(l => l.priority === 'High' || l.priority === 'Urgent').length} Leads
-              </span>
-            </div>
+        <div className="bento-card">
+          <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block mb-2">Needs attention <InfoTip text={`First-call SLA: a VIP lead with no first contact for more than ${VIP_SLA_HOURS} h, or any lead for more than ${NEGLECT_HOURS} h, counted from the moment it was assigned (or 09:00 on the lead date).`} /></span>
+          <div className="flex items-baseline gap-2"><span className="text-3xl font-black text-rose-600">{board.callList.filter((t) => t.level === 0).length}</span><span className="text-xs text-brand-gray">must do today</span></div>
+          <div className="mt-3 pt-3 border-t border-brand-gray/10 space-y-1 text-[10px] font-semibold text-brand-gray">
+            <div className="flex justify-between"><span>VIP first call overdue</span><span className="font-extrabold text-rose-500">{board.first.filter((t) => t.sla === 'vip').length}</span></div>
+            <div className="flex justify-between"><span>Neglected (no first call)</span><span className="font-extrabold text-rose-500">{board.first.filter((t) => t.sla).length}</span></div>
+            <div className="flex justify-between"><span>Main reason for loss</span><span className="font-extrabold text-brand-black dark:text-white">{stats.topLost}</span></div>
           </div>
         </div>
-
       </div>
 
-      {/* BOTTOM SECTION: CALENDAR DATE SELECTOR & AGENDA WORKSPACE */}
-      <div className="bento-card" id="crm-my-day-agenda-container">
-        
-        {/* DATE CONTROL PANEL */}
-        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6 pb-6 border-b border-brand-gray/10 dark:border-white/10">
-          <div className="flex items-center gap-2">
-            <Calendar className="text-brand-red" size={20} />
-            <h3 className="font-extrabold text-sm uppercase text-brand-black dark:text-white tracking-wide">
-              Scheduled Workspace
-            </h3>
-          </div>
-
-          {/* Arrows and Date Input Picker */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handlePrevDay}
-              className="p-2 border border-brand-gray/20 dark:border-white/10 rounded-xl hover:bg-brand-gray/5 dark:hover:bg-white/5 text-brand-black dark:text-white"
-              title="Previous Day"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            
-            <button
-              onClick={handleToday}
-              className="px-3 py-2 text-xs font-bold bg-brand-gray/10 dark:bg-white/10 text-brand-black dark:text-white rounded-xl hover:bg-brand-gray/15 dark:hover:bg-white/15"
-            >
-              Today
-            </button>
-
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="px-3 py-1.5 border border-brand-gray/20 dark:border-white/10 rounded-xl bg-transparent text-xs font-bold focus:outline-none focus:border-brand-red text-brand-black dark:text-white"
-            />
-
-            <button
-              onClick={handleNextDay}
-              className="p-2 border border-brand-gray/20 dark:border-white/10 rounded-xl hover:bg-brand-gray/5 dark:hover:bg-white/5 text-brand-black dark:text-white"
-              title="Next Day"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </div>
-
-        {/* AGENDA CONTENT */}
-        {viewMode === 'calendar' ? (
-          <div className="bento-card overflow-hidden overflow-x-auto">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-lg text-brand-black dark:text-white">
-                {parseLocalDay(selectedDate || localISO(new Date())).toLocaleString('default', { month: 'long', year: 'numeric' })}
-              </h3>
+      {tab === 'priority' ? (
+        <>
+          {/* queue switch */}
+          <div className="bento-card space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex bg-brand-gray/10 rounded-xl p-1">
+                <button onClick={() => { setQueueMode('follow'); setPinned(null); }} className={`px-4 py-1.5 rounded-lg text-xs font-bold ${mode === 'follow' ? 'bg-white shadow-sm text-brand-black' : 'text-brand-gray'}`}>Follow-ups <span className="font-mono">{followQ.length}</span></button>
+                <button onClick={() => { setQueueMode('new'); setPinned(null); }} className={`px-4 py-1.5 rounded-lg text-xs font-bold ${mode === 'new' ? 'bg-white shadow-sm text-brand-black' : 'text-brand-gray'}`}>Call first <span className="font-mono">{board.first.length}</span></button>
+              </div>
+              <div className="flex items-center gap-2 text-[10px] font-bold text-brand-gray">
+                <Settings2 size={12} /> Today's batch of new leads
+                <button onClick={() => setBatchSize(batch - 1)} className="w-6 h-6 rounded-lg bg-brand-gray/10 hover:bg-brand-gray/20" aria-label="Smaller batch">−</button>
+                <span className="font-mono text-brand-black w-5 text-center">{batch}</span>
+                <button onClick={() => setBatchSize(batch + 1)} className="w-6 h-6 rounded-lg bg-brand-gray/10 hover:bg-brand-gray/20" aria-label="Bigger batch">+</button>
+                <InfoTip text="Leads nobody has contacted are never 'overdue'. They wait in the Call first queue, and you take them a few at a time (1 to 20, saved on this computer)." />
+              </div>
             </div>
-            <div className="grid grid-cols-7 gap-px bg-brand-gray/20 dark:bg-white/10 border border-brand-gray/20 dark:border-white/10 rounded-xl overflow-hidden min-w-[700px]">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-                <div key={day} className="bg-brand-gray/5 dark:bg-brand-black/50 p-2 text-center text-[10px] font-extrabold text-brand-gray dark:text-white/60 uppercase tracking-wider">
-                  {day}
+            <p className="text-[11px] text-brand-gray">
+              {mode === 'follow' ? 'Clients who were spoken to and are waiting to hear back, ranked by urgency. Nothing here is a lead nobody has opened.' : `Nobody has contacted these yet, so none is overdue. Today's batch is ${batch}.`}
+            </p>
+            <div className="flex items-center justify-between text-xs font-bold text-brand-black">
+              <span>{parseLocalDay(today).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</span>
+              <span className="text-brand-gray">{doneN} done · {queue.length} to go</span>
+            </div>
+            <div className="h-1.5 bg-brand-gray/10 rounded-full overflow-hidden"><div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${pct}%` }} /></div>
+
+            {/* hero */}
+            {hero ? (
+              <div className="border-2 border-brand-red/25 rounded-2xl p-5 bg-brand-red/5 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${LEVEL_STYLE[hero.level]}`}>{DAY_LEVEL[hero.level]}</span>
+                  {hero.sla === 'vip' && <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-rose-600 text-white flex items-center gap-1"><Flame size={10} />VIP SLA breached</span>}
+                  {hero.sla === 'neglect' && <span className="text-[9px] font-extrabold px-2 py-0.5 rounded-full bg-rose-600 text-white flex items-center gap-1"><Hourglass size={10} />Neglected</span>}
+                  <span className="text-xs font-bold text-brand-red">{hero.why}</span>
                 </div>
-              ))}
-              {(() => {
-                const currentMonthDate = parseLocalDay(selectedDate || localISO(new Date()));
-                const year = currentMonthDate.getFullYear();
-                const month = currentMonthDate.getMonth();
-                
-                const firstDayOfMonth = new Date(year, month, 1);
-                const lastDayOfMonth = new Date(year, month + 1, 0);
-                const startingDayOfWeek = firstDayOfMonth.getDay();
-                const daysInMonth = lastDayOfMonth.getDate();
-
-                const calendarDays = [];
-                for (let i = 0; i < startingDayOfWeek; i++) {
-                  calendarDays.push(null);
-                }
-                for (let i = 1; i <= daysInMonth; i++) {
-                  calendarDays.push(`${year}-${pad2(month + 1)}-${pad2(i)}`);
-                }
-                while (calendarDays.length % 7 !== 0) {
-                  calendarDays.push(null);
-                }
-
-                return calendarDays.map((dateStr, idx) => {
-                  if (!dateStr) {
-                    return <div key={`empty-${idx}`} className="bg-white dark:bg-brand-black p-2 min-h-[100px]" />;
-                  }
-
-                  const dayNum = parseInt(dateStr.split('-')[2], 10);
-                  const isSelected = dateStr === selectedDate;
-                  const isToday = dateStr === localISO(new Date());
-
-                  const cellTasks = tasks.filter(t => t.dueDate && dayOf(t.dueDate) === dateStr && String(t.salespersonId) === String(activeSalesperson.id));
-                  const cellLeadsWithEvents = salespersonLeads.filter(lead => {
-                    if (lead.nextFollowUpDate === dateStr) return true;
-                    if (lead.expectedClosingDate && dayOf(lead.expectedClosingDate) === dateStr) return true;
-                    if (lead.timeline && Array.isArray(lead.timeline)) {
-                      return lead.timeline.some(e => ['Meeting', 'Visit', 'Call', 'WhatsApp', 'Email'].includes(e.type) && dayOf(e.timestamp) === dateStr);
-                    }
-                    return false;
-                  });
-
-                  const totalItems = cellTasks.length + cellLeadsWithEvents.length;
-
-                  return (
-                    <div 
-                      key={dateStr} 
-                      onClick={() => {
-                        setSelectedDate(dateStr);
-                        setViewMode('list');
-                      }}
-                      className={`bg-white dark:bg-brand-black p-2 min-h-[100px] border-t border-brand-gray/10 dark:border-white/5 relative cursor-pointer hover:bg-brand-gray/5 dark:hover:bg-white/5 transition-colors group ${isSelected ? 'ring-2 ring-inset ring-brand-red' : ''}`}
-                    >
-                      <span className={`text-[10px] font-bold inline-flex items-center justify-center w-6 h-6 rounded-full ${isToday ? 'bg-brand-red text-white' : isSelected ? 'bg-brand-gray/20 dark:bg-white/20 text-brand-black dark:text-white' : 'text-brand-gray dark:text-white/60'}`}>
-                        {dayNum}
-                      </span>
-                      
-                      {totalItems > 0 && (
-                        <div className="mt-2 flex flex-col gap-1">
-                          {cellTasks.slice(0, 2).map((t, i) => (
-                            <div key={`t-${i}`} className="text-[9px] truncate bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 rounded border border-purple-200 dark:border-purple-800">
-                              {t.title}
-                            </div>
-                          ))}
-                          {cellLeadsWithEvents.slice(0, 2 - Math.min(cellTasks.length, 2)).map((l, i) => (
-                            <div key={`l-${i}`} className="text-[9px] truncate bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-800">
-                              {l.customerName}
-                            </div>
-                          ))}
-                          {totalItems > 2 && (
-                            <div className="text-[9px] text-brand-gray dark:text-white/40 font-bold px-1">+ {totalItems - 2} more</div>
-                          )}
-                        </div>
-                      )}
+                <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                  <div className="space-y-2 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs font-extrabold text-brand-red">{hero.lead.id}</span>
+                      <h4 className="font-bold text-base text-brand-black truncate">{hero.lead.companyName || hero.lead.customerName}</h4>
+                      <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${priorityPill(hero.lead.priority)}`}>{hero.lead.priority}</span>
+                      <span className="bg-brand-black text-white text-[9px] font-extrabold px-2 py-0.5 rounded-full">{hero.lead.status}</span>
                     </div>
-                  );
-                });
-              })()}
-            </div>
-          </div>
-        ) : scheduleLeads.length === 0 ? (
-          <div className="py-16 text-center space-y-4" id="empty-agenda-view">
-            <div className="w-16 h-16 bg-brand-gray/5 dark:bg-white/5 rounded-full flex items-center justify-center mx-auto text-brand-gray dark:text-white/30">
-              <Clock size={32} />
-            </div>
-            <div className="max-w-md mx-auto space-y-1">
-              <h4 className="font-bold text-sm text-brand-black dark:text-white">All Clear for {parseLocalDay(selectedDate || localISO(new Date())).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}!</h4>
-              <p className="text-xs text-brand-gray dark:text-white/60 leading-relaxed">
-                There are no scheduled customer meetings, site visits, expected close dates, or set follow-ups for this date. Use the inquiries CRM tab to schedule upcoming client activities.
-              </p>
-            </div>
-            <button
-              onClick={() => setActiveSubTab('leads')}
-              className="btn-primary text-xs font-extrabold px-4 py-2 mt-2"
-            >
-              Inspect Inquiries CRM
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-4" id="agenda-leads-list">
-            <span className="text-[10px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-widest block mb-1">
-              {scheduleLeads.length} Lead File{scheduleLeads.length > 1 ? 's' : ''} Requiring Action
-            </span>
-
-            <div className="grid grid-cols-1 gap-4">
-              {scheduleLeads.map((lead) => {
-                const leadTasks = getLeadTasksForDate(lead);
-                
-                return (
-                  <div 
-                    key={lead.id}
-                    className="border border-brand-gray/15 dark:border-white/5 rounded-2xl bg-brand-gray/5 dark:bg-white/5 hover:border-brand-red/30 transition-all p-5 flex flex-col md:flex-row justify-between gap-4"
-                  >
-                    {/* LEFT COLUMN: LEAD MAIN DETAILS */}
-                    <div className="space-y-3 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-xs font-extrabold text-brand-red">{lead.id}</span>
-                        <h4 className="font-bold text-sm text-brand-black dark:text-white">{lead.customerName}</h4>
-                        <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${
-                          lead.priority === 'Urgent' ? 'bg-red-100 text-red-700' :
-                          lead.priority === 'High' ? 'bg-orange-100 text-orange-700' :
-                          lead.priority === 'Normal' ? 'bg-blue-100 text-blue-700' :
-                          'bg-gray-100 text-gray-700'
-                        }`}>
-                          {lead.priority}
-                        </span>
-                        <span className="bg-brand-black text-white/80 dark:bg-white/10 dark:text-white text-[9px] font-extrabold px-2 py-0.5 rounded-full">
-                          {lead.status}
-                        </span>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-brand-gray dark:text-white/60 font-medium">
-                        <div className="flex items-center gap-1.5">
-                          <Phone size={12} className="text-brand-gray/50" />
-                          <span>{lead.phoneNumber || '—'}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <Briefcase size={12} className="text-brand-gray/50" />
-                          <span>{lead.project || '—'} ({Number(lead.requiredSize) > 0 ? `${lead.requiredSize} sqm` : 'size n/a'})</span>
-                        </div>
-                        {Number(lead.budget) > 0 && (
-                          <div className="flex items-center gap-1.5">
-                            <DollarSign size={12} className="text-brand-gray/50" />
-                            <span>Budget: {lead.budget.toLocaleString()} USD/EGP</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* SCHEDULED ACTIVITIES ON THIS DATE */}
-                      <div className="bg-white dark:bg-brand-black/20 rounded-xl p-3 border border-brand-gray/10 dark:border-white/10 space-y-2 mt-1">
-                        <span className="text-[9px] font-extrabold text-brand-gray dark:text-white/40 uppercase tracking-wider block">
-                          Day's Scheduled Focus:
-                        </span>
-                        <div className="space-y-2">
-                          {leadTasks.map((task, idx) => (
-                            <div key={idx} className="flex gap-2 text-[11px] leading-relaxed">
-                              {task.type === 'Follow-Up' && <Clock className="text-amber-500 mt-0.5 flex-shrink-0" size={13} />}
-                              {task.type === 'Deadline' && <AlertCircle className="text-rose-500 mt-0.5 flex-shrink-0" size={13} />}
-                              {task.type === 'Meeting' && <Calendar className="text-indigo-500 mt-0.5 flex-shrink-0" size={13} />}
-                              {task.type === 'Visit' && <MapPin className="text-amber-600 mt-0.5 flex-shrink-0" size={13} />}
-                              {task.type === 'Call' && <Phone className="text-emerald-500 mt-0.5 flex-shrink-0" size={13} />}
-                              {task.type === 'WhatsApp' && <MessageSquare className="text-green-500 mt-0.5 flex-shrink-0" size={13} />}
-                              {task.type === 'Email' && <Mail className="text-blue-500 mt-0.5 flex-shrink-0" size={13} />}
-                              
-                              <div className="flex-1">
-                                <span className="font-extrabold text-brand-black dark:text-white">{task.title}</span>
-                                {task.time && <span className="text-[10px] text-brand-gray dark:text-white/40 ml-2">({task.time})</span>}
-                                {task.details && <p className="text-[10px] text-brand-gray dark:text-white/60 mt-0.5 italic">{task.details}</p>}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* RIGHT COLUMN: ACTION ACTIONS */}
-                    <div className="flex flex-row md:flex-col justify-end items-end gap-2 flex-wrap md:w-48">
-                      <button
-                        onClick={() => handleViewLeadDetails(lead.id)}
-                        className="btn-secondary text-[10px] font-extrabold px-3 py-1.5 w-full flex items-center justify-center gap-1"
-                        title="Open lead file details in CRM"
-                      >
-                        <ExternalLink size={12} />
-                        <span>Open Lead CRM</span>
-                      </button>
-
-                      <button
-                        onClick={() => openLogInteraction(lead)}
-                        className="bg-brand-red text-white hover:opacity-90 transition-all font-extrabold text-[10px] px-3 py-1.5 rounded-xl w-full flex items-center justify-center gap-1 shadow-sm"
-                      >
-                        <Calendar size={12} />
-                        <span>Log Interaction</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setSchedulingLead(lead);
-                          setFollowUpDate(lead.nextFollowUpDate || selectedDate);
-                        }}
-                        className="bg-brand-gray/10 hover:bg-brand-gray/20 dark:bg-white/10 dark:hover:bg-white/20 text-brand-black dark:text-white transition-all font-extrabold text-[10px] px-3 py-1.5 rounded-xl w-full flex items-center justify-center gap-1"
-                      >
-                        <Clock size={12} />
-                        <span>Reschedule FollowUp</span>
-                      </button>
+                    <p className="text-[11px] text-brand-gray">{sub(hero.lead)}</p>
+                    <div className="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-brand-gray font-medium">
+                      <span className="flex items-center gap-1"><Phone size={12} />{hero.lead.phoneNumber || '—'}</span>
+                      <span className="flex items-center gap-1"><Briefcase size={12} />{Number(hero.lead.dealValue) > 0 ? fmtEGP(Number(hero.lead.dealValue)) : Number(hero.lead.requiredSize) > 0 ? `${Number(hero.lead.requiredSize).toLocaleString('en-US')} sqm` : 'size n/a'}</span>
+                      <span className="flex items-center gap-1"><Clock size={12} />{hero.gap == null ? 'never contacted' : `${hero.gap} d since contact`}</span>
+                      {hero.lead.nextFollowUpDate && <span className="flex items-center gap-1"><Calendar size={12} />next {fmtDay(dayOf(hero.lead.nextFollowUpDate))}</span>}
                     </div>
                   </div>
-                );
-              })}
+                  <div className="flex flex-col gap-2 md:w-56">
+                    <div className="flex gap-1.5">
+                      {telHref(hero.lead) ? <a href={telHref(hero.lead)} className="flex-1 bg-emerald-600 text-white rounded-xl py-2 text-xs font-extrabold flex items-center justify-center gap-1 hover:opacity-90"><Phone size={13} />Call</a> : <span className="flex-1 bg-brand-gray/10 text-brand-gray rounded-xl py-2 text-xs font-bold text-center">No phone</span>}
+                      {waHref(hero.lead) && <a href={waHref(hero.lead)} target="_blank" rel="noopener noreferrer" className="flex-1 bg-green-500 text-white rounded-xl py-2 text-xs font-extrabold flex items-center justify-center gap-1 hover:opacity-90"><MessageSquare size={13} />WhatsApp</a>}
+                    </div>
+                    <button onClick={() => openModal('outcome', hero.lead)} className="bg-brand-red text-white rounded-xl py-2 text-xs font-extrabold flex items-center justify-center gap-1 hover:opacity-90"><CheckCircle size={13} />Done — log it</button>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      <button onClick={() => openModal('status', hero.lead)} className="bg-white border border-brand-gray/20 rounded-xl py-1.5 text-[10px] font-bold hover:bg-brand-gray/5">Status</button>
+                      <button onClick={() => openModal('resched', hero.lead)} className="bg-white border border-brand-gray/20 rounded-xl py-1.5 text-[10px] font-bold hover:bg-brand-gray/5">Reschedule</button>
+                      <button onClick={() => openLead(hero.lead.id)} className="bg-white border border-brand-gray/20 rounded-xl py-1.5 text-[10px] font-bold hover:bg-brand-gray/5">Open</button>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between pt-2 border-t border-brand-gray/10 text-[11px] font-bold text-brand-gray">
+                  <button disabled={!pinned && idx === 0} onClick={() => { if (pinned) setPinned(null); else setCursor(Math.max(0, idx - 1)); }} className="flex items-center gap-1 disabled:opacity-30"><ArrowLeft size={12} />{pinned ? 'Back to my queue' : 'back'}</button>
+                  <span>{pinned ? 'picked from the list' : `${idx + 1} of ${queue.length}`}{!pinned && queue[idx + 1] ? ` · next: ${(queue[idx + 1].lead.companyName || queue[idx + 1].lead.customerName || '').slice(0, 28)}` : ''}</span>
+                  <button disabled={!pinned && idx >= queue.length - 1} onClick={() => { if (pinned) setPinned(null); else setCursor(Math.min(queue.length - 1, idx + 1)); }} className="flex items-center gap-1 disabled:opacity-30">Skip<SkipForward size={12} /></button>
+                </div>
+              </div>
+            ) : (
+              <div className="py-10 text-center space-y-2">
+                <CheckCircle size={32} className="mx-auto text-emerald-500" />
+                <h4 className="font-bold text-sm text-brand-black">{mode === 'follow' ? 'No follow-ups waiting' : 'No new leads to start'}</h4>
+                <p className="text-xs text-brand-gray">{mode === 'follow' ? 'Nobody is waiting on you right now.' : 'Every lead has been opened.'}</p>
+                <div className="flex justify-center gap-2 pt-1">
+                  {mode === 'follow' && board.first.length > 0 && <button onClick={() => setQueueMode('new')} className="btn-primary text-xs px-4 py-2">Start on new leads</button>}
+                  <button onClick={() => setActiveSubTab('leads')} className="btn-secondary text-xs px-4 py-2">Open my leads</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* folds */}
+          <div className="space-y-3">
+            {FOLDS.map((f) => {
+              const rows = board.by[f.kind];
+              if (!rows.length) return null;
+              const list = f.kind === 'first' ? rows.slice(batch) : rows;
+              if (!list.length) return null;
+              const isOpenFold = open[f.kind];
+              return (
+                <div key={f.kind} className="bento-card !p-0 overflow-hidden">
+                  <button onClick={() => setOpen({ ...open, [f.kind]: !isOpenFold })} className="w-full flex items-center justify-between px-5 py-3 hover:bg-brand-gray/5">
+                    <span className={`text-xs font-extrabold uppercase tracking-wide ${f.tone}`}>{f.title} <span className="font-mono text-brand-black">({list.length})</span></span>
+                    {isOpenFold ? <ChevronUp size={14} className="text-brand-gray" /> : <ChevronDown size={14} className="text-brand-gray" />}
+                  </button>
+                  {isOpenFold && (
+                    <div className="px-2 pb-3">
+                      {list.slice(0, f.cap).map((t) => <TaskRow key={t.lead.id} t={t} />)}
+                      {list.length > f.cap && <p className="text-[10px] text-brand-gray px-3 pt-2">+ {list.length - f.cap} more in the leads page.</p>}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {board.wonPendingAR.length > 0 && (
+              <div className="bento-card !p-0 overflow-hidden">
+                <button onClick={() => setOpen({ ...open, ar: !open.ar })} className="w-full flex items-center justify-between px-5 py-3 hover:bg-brand-gray/5">
+                  <span className="text-xs font-extrabold uppercase tracking-wide text-amber-600 flex items-center gap-1.5"><Wallet size={13} />Won — cash not yet confirmed by Accounts Receivable <span className="font-mono text-brand-black">({board.wonPendingAR.length})</span></span>
+                  {open.ar ? <ChevronUp size={14} className="text-brand-gray" /> : <ChevronDown size={14} className="text-brand-gray" />}
+                </button>
+                {open.ar && (
+                  <div className="px-2 pb-3">
+                    {board.wonPendingAR.slice(0, 40).map((l) => (
+                      <div key={l.id} className="flex items-center gap-3 py-2 px-3 hover:bg-brand-gray/5 rounded-xl cursor-pointer" onClick={() => openLead(l.id)}>
+                        <div className="min-w-0 flex-1"><p className="text-xs font-bold truncate">{l.companyName || l.customerName}</p><p className="text-[10px] text-brand-gray">{l.project} · won {fmtDay(dayOf(l.wonDate))}</p></div>
+                        <span className="font-mono text-[11px] font-bold">{Number(l.dealValue) > 0 ? fmtEGP(Number(l.dealValue)) : '—'}</span>
+                        <span className="font-mono text-[10px] text-brand-red">{l.id}</span>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-brand-gray px-3 pt-2">Only Accounts Receivable confirms the cash. Ask the client to complete payment.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            {board.contractDue.length > 0 && (
+              <div className="bento-card !p-0 overflow-hidden">
+                <button onClick={() => setOpen({ ...open, ct: !open.ct })} className="w-full flex items-center justify-between px-5 py-3 hover:bg-brand-gray/5">
+                  <span className="text-xs font-extrabold uppercase tracking-wide text-indigo-600 flex items-center gap-1.5"><FileText size={13} />Deals awaiting a contract <span className="font-mono text-brand-black">({board.contractDue.length})</span></span>
+                  {open.ct ? <ChevronUp size={14} className="text-brand-gray" /> : <ChevronDown size={14} className="text-brand-gray" />}
+                </button>
+                {open.ct && (
+                  <div className="px-2 pb-3">
+                    {board.contractDue.slice(0, 40).map((c) => (
+                      <div key={c.lead.id} className="flex items-center gap-3 py-2 px-3 hover:bg-brand-gray/5 rounded-xl cursor-pointer" onClick={() => openLead(c.lead.id)}>
+                        <div className="min-w-0 flex-1"><p className="text-xs font-bold truncate">{c.lead.companyName || c.lead.customerName}</p><p className="text-[10px] text-brand-gray">{c.lead.project} · {c.since ? `since ${fmtDay(c.since)}` : 'date not recorded'}</p></div>
+                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${c.days >= CONTRACT_REMIND_DAYS ? 'bg-rose-100 text-rose-700' : 'bg-brand-gray/10 text-brand-gray'}`}>{c.since ? `${c.days} d` : '—'}</span>
+                        <span className="font-mono text-[10px] text-brand-red">{c.lead.id}</span>
+                      </div>
+                    ))}
+                    <p className="text-[10px] text-brand-gray px-3 pt-2">Reservation made (or deal won) with no contract date yet. Reminder after {CONTRACT_REMIND_DAYS} days.</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="bento-card" id="crm-my-day-agenda-container">
+          <div className="flex flex-col sm:flex-row justify-between items-center gap-4 mb-6 pb-6 border-b border-brand-gray/10 dark:border-white/10">
+            <div className="flex items-center gap-3">
+              <Calendar className="text-brand-red" size={20} />
+              <h3 className="font-extrabold text-sm uppercase text-brand-black dark:text-white tracking-wide">Scheduled workspace</h3>
+              <div className="flex bg-brand-gray/10 rounded-xl p-1">
+                {(['list', 'calendar'] as const).map((m) => <button key={m} onClick={() => setViewMode(m)} className={`px-3 py-1 rounded-lg text-[10px] font-bold ${viewMode === m ? 'bg-white shadow-sm text-brand-black' : 'text-brand-gray'}`}>{m === 'list' ? 'List' : 'Calendar'}</button>)}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={() => shiftDay(-1)} className="p-2 border border-brand-gray/20 rounded-xl hover:bg-brand-gray/5" title="Previous day"><ChevronLeft size={16} /></button>
+              <button onClick={() => setSelectedDate(todayISO())} className="px-3 py-2 text-xs font-bold bg-brand-gray/10 rounded-xl hover:bg-brand-gray/15">Today</button>
+              <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="px-3 py-1.5 border border-brand-gray/20 rounded-xl bg-transparent text-xs font-bold focus:outline-none focus:border-brand-red" />
+              <button onClick={() => shiftDay(1)} className="p-2 border border-brand-gray/20 rounded-xl hover:bg-brand-gray/5" title="Next day"><ChevronRight size={16} /></button>
             </div>
           </div>
-        )}
-      </div>
 
-      {/* -------------------- INTERACTIONS LOGGER MODAL -------------------- */}
-      {loggingLead && (
-        <div className="fixed inset-0 bg-brand-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-white dark:bg-brand-black border border-brand-gray/20 dark:border-white/10 rounded-2xl w-full max-w-md shadow-xl overflow-hidden"
-          >
-            <div className="p-5 border-b border-brand-gray/15 dark:border-white/10 flex justify-between items-center bg-brand-gray/5 dark:bg-white/5">
-              <div>
-                <h4 className="font-bold text-sm uppercase tracking-wide text-brand-black dark:text-white">
-                  Log Day Interaction
-                </h4>
-                <p className="text-[10px] text-brand-gray dark:text-white/60 mt-0.5">Lead: {loggingLead.customerName} ({loggingLead.id})</p>
+          {viewMode === 'calendar' ? (
+            <div className="overflow-x-auto">
+              <h3 className="font-bold text-lg text-brand-black mb-4">{parseLocalDay(selectedDate || todayISO()).toLocaleString('default', { month: 'long', year: 'numeric' })}</h3>
+              <div className="grid grid-cols-7 gap-px bg-brand-gray/20 border border-brand-gray/20 rounded-xl overflow-hidden min-w-[700px]">
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => <div key={d} className="bg-brand-gray/5 p-2 text-center text-[10px] font-extrabold text-brand-gray uppercase tracking-wider">{d}</div>)}
+                {(() => {
+                  const cur = parseLocalDay(selectedDate || todayISO());
+                  const y = cur.getFullYear(); const mo = cur.getMonth();
+                  const cells: (string | null)[] = [];
+                  for (let i = 0; i < new Date(y, mo, 1).getDay(); i++) cells.push(null);
+                  for (let i = 1; i <= new Date(y, mo + 1, 0).getDate(); i++) cells.push(localISO(new Date(y, mo, i)));
+                  while (cells.length % 7) cells.push(null);
+                  return cells.map((d, i) => {
+                    if (!d) return <div key={`e${i}`} className="bg-white p-2 min-h-[90px]" />;
+                    const ids = [...(dayIndex.get(d) || [])];
+                    return (
+                      <div key={d} onClick={() => { setSelectedDate(d); setViewMode('list'); }} className={`bg-white p-2 min-h-[90px] cursor-pointer hover:bg-brand-gray/5 ${d === selectedDate ? 'ring-2 ring-inset ring-brand-red' : ''}`}>
+                        <span className={`text-[10px] font-bold inline-flex items-center justify-center w-6 h-6 rounded-full ${d === today ? 'bg-brand-red text-white' : 'text-brand-gray'}`}>{Number(d.slice(8))}</span>
+                        <div className="mt-1 flex flex-col gap-1">
+                          {ids.slice(0, 2).map((id) => <div key={id} className="text-[9px] truncate bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded border border-blue-200">{leadById.get(id)?.customerName || id}</div>)}
+                          {ids.length > 2 && <div className="text-[9px] text-brand-gray font-bold px-1">+ {ids.length - 2} more</div>}
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
-              <button onClick={() => setLoggingLead(null)} aria-label="Close" className="text-brand-gray dark:text-white/60 hover:text-brand-red">
-                <XCircle size={18} />
-              </button>
             </div>
+          ) : scheduleLeads.length === 0 ? (
+            <div className="py-14 text-center space-y-3">
+              <Clock size={32} className="mx-auto text-brand-gray/40" />
+              <h4 className="font-bold text-sm text-brand-black">All clear for {parseLocalDay(selectedDate || todayISO()).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })}</h4>
+              <p className="text-xs text-brand-gray max-w-md mx-auto">No meetings, site visits, offer follow-ups, follow-ups or expected closings are set for this date.</p>
+              <button onClick={() => setActiveSubTab('leads')} className="btn-primary text-xs font-extrabold px-4 py-2">Open the leads</button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-widest block">{scheduleLeads.length} lead{scheduleLeads.length > 1 ? 's' : ''} with something on this day</span>
+              {scheduleLeads.slice(0, 100).map((lead) => (
+                <div key={lead.id} className="border border-brand-gray/15 rounded-2xl bg-brand-gray/5 hover:border-brand-red/30 transition-all p-5 flex flex-col md:flex-row justify-between gap-4">
+                  <div className="space-y-3 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs font-extrabold text-brand-red">{lead.id}</span>
+                      <h4 className="font-bold text-sm text-brand-black">{lead.customerName}</h4>
+                      <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${priorityPill(lead.priority)}`}>{lead.priority}</span>
+                      <span className="bg-brand-black text-white/80 text-[9px] font-extrabold px-2 py-0.5 rounded-full">{lead.status}{SLOW_STATUSES.has(lead.status) ? '' : ' (older status)'}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-brand-gray font-medium">
+                      <span className="flex items-center gap-1.5"><Phone size={12} />{lead.phoneNumber || '—'}</span>
+                      <span className="flex items-center gap-1.5"><Briefcase size={12} />{lead.project || '—'} ({Number(lead.requiredSize) > 0 ? `${lead.requiredSize} sqm` : 'size n/a'})</span>
+                    </div>
+                    <div className="bg-white rounded-xl p-3 border border-brand-gray/10 space-y-2">
+                      <span className="text-[9px] font-extrabold text-brand-gray uppercase tracking-wider block">Day's scheduled focus</span>
+                      {leadTasksForDate(lead).map((task, i) => (
+                        <div key={i} className="flex gap-2 text-[11px] leading-relaxed">
+                          {task.type === 'Follow-Up' && <Clock className="text-amber-500 mt-0.5 shrink-0" size={13} />}
+                          {task.type === 'Deadline' && <AlertCircle className="text-rose-500 mt-0.5 shrink-0" size={13} />}
+                          {task.type === 'Meeting' && <Calendar className="text-indigo-500 mt-0.5 shrink-0" size={13} />}
+                          {task.type === 'Visit' && <MapPin className="text-amber-600 mt-0.5 shrink-0" size={13} />}
+                          {task.type === 'Call' && <Phone className="text-emerald-500 mt-0.5 shrink-0" size={13} />}
+                          {task.type === 'WhatsApp' && <MessageSquare className="text-green-500 mt-0.5 shrink-0" size={13} />}
+                          {task.type === 'Email' && <Mail className="text-blue-500 mt-0.5 shrink-0" size={13} />}
+                          <div className="flex-1"><span className="font-extrabold text-brand-black">{task.title}</span>{task.time && <span className="text-[10px] text-brand-gray ml-2">({task.time})</span>}{task.details && <p className="text-[10px] text-brand-gray mt-0.5 italic">{task.details}</p>}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="md:w-44 shrink-0"><QuickActions l={lead} /></div>
+                </div>
+              ))}
+              {scheduleLeads.length > 100 && <p className="text-[10px] text-brand-gray">Showing 100 of {scheduleLeads.length}.</p>}
+            </div>
+          )}
+        </div>
+      )}
 
+      {/* ---------------- modals ---------------- */}
+      {modal && target && (
+        <div className="fixed inset-0 bg-brand-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4" onClick={() => setModal(null)}>
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-brand-black border border-brand-gray/20 rounded-2xl w-full max-w-md shadow-xl overflow-hidden max-h-[90vh] overflow-y-auto">
+            <div className="p-5 border-b border-brand-gray/15 flex justify-between items-center bg-brand-gray/5">
+              <div>
+                <h4 className="font-bold text-sm uppercase tracking-wide text-brand-black">
+                  {modal === 'outcome' ? 'Log the outcome' : modal === 'log' ? 'Log an interaction' : modal === 'status' ? 'Change status' : 'Reschedule follow-up'}
+                </h4>
+                <p className="text-[10px] text-brand-gray mt-0.5">{target.customerName} ({target.id}) · {target.status}</p>
+              </div>
+              <button onClick={() => setModal(null)} aria-label="Close" className="text-brand-gray hover:text-brand-red"><XCircle size={18} /></button>
+            </div>
             <div className="p-6 space-y-4 text-xs">
-              
-              {/* INTERACTION TYPE PICKER */}
-              <div>
-                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Interaction Type</label>
-                <div className="grid grid-cols-5 gap-1.5">
-                  {(['call', 'whatsapp', 'email', 'meeting', 'visit'] as const).map((type) => (
-                    <button
-                      key={type}
-                      type="button"
-                      onClick={() => setInteractionType(type)}
-                      className={`py-2 px-1 text-[9px] font-extrabold rounded-lg border text-center uppercase tracking-wider transition-all ${
-                        interactionType === type
-                          ? 'bg-brand-red text-white border-brand-red'
-                          : 'bg-brand-gray/5 dark:bg-white/5 border-brand-gray/15 dark:border-white/10 text-brand-gray dark:text-white/60 hover:bg-brand-gray/10 dark:hover:bg-white/10'
-                      }`}
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* DATE & TIME */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Date</label>
-                  <input
-                    type="date"
-                    value={interactionDate}
-                    onChange={(e) => setInteractionDate(e.target.value)}
-                    className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Time</label>
-                  <input
-                    type="time"
-                    value={interactionTime}
-                    onChange={(e) => setInteractionTime(e.target.value)}
-                    className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black"
-                  />
-                </div>
-              </div>
-
-              {/* MEETING / VISIT ADDITIONS */}
-              {interactionType === 'meeting' && (
-                <div>
-                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Location / Meeting Link</label>
-                  <input
-                    type="text"
-                    value={interactionLocation}
-                    onChange={(e) => setInteractionLocation(e.target.value)}
-                    placeholder="e.g. Physical office, Zoom, MS Teams link"
-                    className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black"
-                  />
-                </div>
+              {modal === 'outcome' && (
+                <>
+                  <div>
+                    <label className={lbl}>What happened?</label>
+                    <div className="space-y-1.5">
+                      {([['theirs', 'They will come back to me', 'Status becomes Client Will Call Back'], ['mine', 'I need to call again', 'Status becomes Call Back (needs the time and a note)'], ['send', 'I owe them something', 'Status stays; I set the next date'], ['none', 'No next step', 'Status stays; next date cleared']] as const).map(([k, t, d]) => (
+                        <label key={k} className={`flex items-start gap-2 p-2.5 rounded-xl border cursor-pointer ${outcome === k ? 'border-brand-red bg-brand-red/5' : 'border-brand-gray/15'}`}>
+                          <input type="radio" name="outcome" checked={outcome === k} onChange={() => setOutcome(k)} className="mt-0.5" />
+                          <span><span className="font-bold text-brand-black block">{t}</span><span className="text-[10px] text-brand-gray">{d}</span></span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  {outcome !== 'none' && (
+                    <div>
+                      <label className={lbl}>Come back in</label>
+                      <div className="flex gap-1.5">{[1, 2, 3, 7, 14].map((n) => <button key={n} type="button" onClick={() => setComeBack(n)} className={`flex-1 py-1.5 rounded-lg border text-[10px] font-extrabold ${comeBack === n ? 'bg-brand-red text-white border-brand-red' : 'border-brand-gray/20 text-brand-gray'}`}>{n} d</button>)}</div>
+                      <p className="text-[10px] text-brand-gray mt-1">Next action: {fmtDay(addDays(todayISO(), comeBack))}</p>
+                    </div>
+                  )}
+                  {outcome === 'mine' && <div><label className={lbl}>Call-back time</label><input type="time" value={outTime} onChange={(e) => setOutTime(e.target.value)} className={fieldCls} /></div>}
+                  <div><label className={lbl}>Note {outcome === 'mine' ? '(required)' : ''}</label><textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={`${fieldCls} h-20 resize-none`} placeholder="What was said, what the client needs…" /></div>
+                </>
               )}
-
-              {interactionType === 'visit' && (
-                <div>
-                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Project Name</label>
-                  <input
-                    type="text"
-                    value={interactionProjectName}
-                    onChange={(e) => setInteractionProjectName(e.target.value)}
-                    placeholder="e.g. PI Parks Industrial Area"
-                    className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black"
-                  />
-                </div>
+              {modal === 'log' && (
+                <>
+                  <div><label className={lbl}>Type</label>
+                    <div className="grid grid-cols-5 gap-1.5">{(['call', 'whatsapp', 'email', 'meeting', 'visit'] as const).map((k) => <button key={k} type="button" onClick={() => setIType(k)} className={`py-2 text-[9px] font-extrabold rounded-lg border uppercase tracking-wider ${iType === k ? 'bg-brand-red text-white border-brand-red' : 'bg-brand-gray/5 border-brand-gray/15 text-brand-gray'}`}>{k}</button>)}</div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div><label className={lbl}>Date</label><input type="date" value={iDate} onChange={(e) => setIDate(e.target.value)} className={fieldCls} /></div>
+                    <div><label className={lbl}>Time</label><input type="time" value={iTime} onChange={(e) => setITime(e.target.value)} className={fieldCls} /></div>
+                  </div>
+                  {(iType === 'meeting' || iType === 'visit') && (
+                    <>
+                      <div><label className={lbl}>{iType === 'meeting' ? 'Location / link' : 'Project'}</label><input type="text" value={iPlace} onChange={(e) => setIPlace(e.target.value)} className={fieldCls} /></div>
+                      <label className="flex items-center gap-2 text-[11px] font-semibold text-brand-black"><input type="checkbox" checked={iSchedule} onChange={(e) => setISchedule(e.target.checked)} />Set the status to {iType === 'meeting' ? 'Scheduled Meeting' : 'Site Visit Scheduled'} for this date and time</label>
+                    </>
+                  )}
+                  <div><label className={lbl}>Notes</label><textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={`${fieldCls} h-24 resize-none`} placeholder="Result, client feedback, next steps…" /></div>
+                </>
               )}
-
-              {/* SUMMARY NOTES */}
-              <div>
-                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Consensus Notes / Feedback</label>
-                <textarea
-                  value={interactionNotes}
-                  onChange={(e) => setInteractionNotes(e.target.value)}
-                  placeholder="Detail results of interaction, client feedback or next negotiation steps..."
-                  className="w-full h-24 bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black resize-none"
-                />
-              </div>
-
+              {modal === 'status' && (
+                <>
+                  <div><label className={lbl}>New status</label>
+                    <select value={stStatus} onChange={(e) => setStStatus(e.target.value)} className={fieldCls}>
+                      <option value="">Choose…</option>
+                      {STATUS_GROUPS.map((g) => <optgroup key={g.group} label={g.group}>{g.statuses.filter((s) => s !== 'Won').map((s) => <option key={s} value={s}>{s}</option>)}</optgroup>)}
+                    </select>
+                    <p className="text-[10px] text-brand-gray mt-1">To mark a deal Won, open the lead: it needs the deal value.</p>
+                  </div>
+                  {REQ_DATETIME.includes(stStatus) && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div><label className={lbl}>Date</label><input type="date" value={stDate} onChange={(e) => setStDate(e.target.value)} className={fieldCls} /></div>
+                      <div><label className={lbl}>Time</label><input type="time" value={stTime} onChange={(e) => setStTime(e.target.value)} className={fieldCls} /></div>
+                    </div>
+                  )}
+                  {REQ_FOLLOWUP.includes(stStatus) && <div><label className={lbl}>Next follow-up date</label><input type="date" value={stNext} onChange={(e) => setStNext(e.target.value)} className={fieldCls} /></div>}
+                  {stStatus === 'Lost' && (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div><label className={lbl}>Reason</label><select value={stReason} onChange={(e) => setStReason(e.target.value)} className={fieldCls}><option value="">Choose…</option>{LOST_REASONS_TEAM.map((r) => <option key={r}>{r}</option>)}</select></div>
+                      <div><label className={lbl}>Category</label><select value={stCat} onChange={(e) => setStCat(e.target.value)} className={fieldCls}><option value="">—</option>{LOST_CATEGORIES.map((r) => <option key={r}>{r}</option>)}</select></div>
+                    </div>
+                  )}
+                  <div><label className={lbl}>Note {REQ_DATETIME.includes(stStatus) ? '(required)' : ''}</label><textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={`${fieldCls} h-20 resize-none`} /></div>
+                </>
+              )}
+              {modal === 'resched' && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div><label className={lbl}>Next action date</label><input type="date" value={fuDate} onChange={(e) => setFuDate(e.target.value)} className={fieldCls} /></div>
+                    <div><label className={lbl}>Time (optional)</label><input type="time" value={fuTime} onChange={(e) => setFuTime(e.target.value)} className={fieldCls} /></div>
+                  </div>
+                  <div className="flex gap-1.5">{[1, 3, 7, 14].map((n) => <button key={n} type="button" onClick={() => setFuDate(addDays(todayISO(), n))} className="flex-1 py-1.5 rounded-lg border border-brand-gray/20 text-[10px] font-extrabold text-brand-gray hover:border-brand-red">+{n} d</button>)}</div>
+                  <p className="text-[10px] text-brand-gray">The status is not changed. Leave the date empty to clear it.</p>
+                </>
+              )}
               <div className="flex gap-2 justify-end pt-3 border-t border-brand-gray/10">
-                <button
-                  type="button"
-                  onClick={() => setLoggingLead(null)}
-                  className="px-4 py-2 text-xs font-bold text-brand-gray hover:bg-brand-gray/5 rounded-xl transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveInteraction}
-                  className="btn-primary text-xs"
-                >
-                  Submit Interaction
-                </button>
+                <button type="button" onClick={() => setModal(null)} className="px-4 py-2 text-xs font-bold text-brand-gray hover:bg-brand-gray/5 rounded-xl">Cancel</button>
+                <button type="button" className="btn-primary text-xs" onClick={modal === 'outcome' ? saveOutcome : modal === 'log' ? saveInteraction : modal === 'status' ? saveStatus : saveResched}>Save</button>
               </div>
             </div>
           </motion.div>
         </div>
       )}
-
-      {/* -------------------- RESCHEDULE FOLLOWUP MODAL -------------------- */}
-      {schedulingLead && (
-        <div className="fixed inset-0 bg-brand-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-white dark:bg-brand-black border border-brand-gray/20 dark:border-white/10 rounded-2xl w-full max-w-sm shadow-xl overflow-hidden"
-          >
-            <div className="p-5 border-b border-brand-gray/15 dark:border-white/10 flex justify-between items-center bg-brand-gray/5 dark:bg-white/5">
-              <div>
-                <h4 className="font-bold text-sm uppercase tracking-wide text-brand-black dark:text-white">
-                  Schedule Follow-Up Date
-                </h4>
-                <p className="text-[10px] text-brand-gray dark:text-white/60 mt-0.5">Lead: {schedulingLead.customerName}</p>
-              </div>
-              <button onClick={() => setSchedulingLead(null)} aria-label="Close" className="text-brand-gray dark:text-white/60 hover:text-brand-red">
-                <XCircle size={18} />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4 text-xs">
-              <div>
-                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Choose Next Action Date</label>
-                <input
-                  type="date"
-                  value={followUpDate}
-                  onChange={(e) => setFollowUpDate(e.target.value)}
-                  className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-brand-red text-brand-black"
-                />
-                <p className="text-[10px] text-brand-gray/80 mt-1.5">
-                  Setting this will schedule this lead file under the corresponding "My Day" agenda.
-                </p>
-              </div>
-
-              <div className="flex gap-2 justify-end pt-3 border-t border-brand-gray/10">
-                <button
-                  type="button"
-                  onClick={() => setSchedulingLead(null)}
-                  className="px-4 py-2 text-xs font-bold text-brand-gray hover:bg-brand-gray/5 rounded-xl transition-all"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveFollowUpDate}
-                  className="btn-primary text-xs"
-                >
-                  Save Date
-                </button>
-              </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
     </div>
   );
 };

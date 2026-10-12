@@ -5,6 +5,7 @@ import { match, pathExists } from "./router.ts";
 import "./routes_core.ts";
 import "./routes_tickets.ts";
 import "./routes_crm.ts";
+import "./routes_crm2.ts";
 import "./routes_plots.ts";
 import { route } from "./router.ts";
 import { ingestInbox } from "./ingest.ts";

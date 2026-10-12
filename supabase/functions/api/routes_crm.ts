@@ -9,6 +9,7 @@ import {
   needAdmin, needCrm, normEmail, normName, normPhone, nowIso, rateLimit, rid, setConfig, str,
 } from "./lib.ts";
 import { route } from "./router.ts";
+import { sanitizeLead } from "./leadrules.ts";
 import { getBody, htmlToText, listFolder, loadEws } from "./ews.ts";
 import {
   chooseAgent, DEFAULT_QUEUE, ensureContactAndCompany, ingestInbox, leadColumns, loadQueue, nextId, parseMail,
@@ -37,32 +38,38 @@ const SPECS: Record<string, Spec> = {
   leads: {
     table: "crm_leads", soft: true,
     cols: (d) => leadColumns(d),
-    owns: (c, scope, team, r) => scope === "all" || r.assigned_to === c.id || r.created_by === c.id || (scope === "team" && !!r.assigned_to && team.includes(r.assigned_to)),
-    canDelete: (_c, scope) => scope !== "own",
+    owns: (c, scope, team, r) => scope === "all" || (scope === "finance" ? r.status === "Won" : r.assigned_to === c.id || r.created_by === c.id || (scope === "team" && !!r.assigned_to && team.includes(r.assigned_to))),
+    canDelete: (_c, scope) => scope === "all" || scope === "team",
   },
   contacts: {
     table: "crm_contacts", soft: true,
     cols: (d) => ({ phone_norm: normPhone(d.phoneNumber) || null, email_norm: normEmail(d.email) || null, name_norm: normName(d.name) || null }),
-    owns: () => true,
-    canDelete: (_c, scope) => scope !== "own",
+    owns: (_c, scope) => scope !== "finance",
+    canDelete: (_c, scope) => scope === "all" || scope === "team",
   },
   companies: {
     table: "crm_companies", soft: true,
     cols: (d) => ({ name_norm: normName(d.name) || null }),
-    owns: () => true,
-    canDelete: (_c, scope) => scope !== "own",
+    owns: (_c, scope) => scope !== "finance",
+    canDelete: (_c, scope) => scope === "all" || scope === "team",
   },
   tasks: {
     table: "crm_tasks", soft: false,
     cols: (d) => ({ owner_id: asUuid(d.salespersonId) }),
-    owns: (c, scope, team, r) => scope === "all" || r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)),
-    canDelete: () => true,
+    owns: (c, scope, team, r) => scope === "all" || (scope !== "finance" && (r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)))),
+    canDelete: (_c, scope) => scope !== "finance",
   },
   activities: {
     table: "crm_activities", soft: false,
     cols: (d) => ({ owner_id: asUuid(d.salespersonId) }),
-    owns: (c, scope, team, r) => scope === "all" || r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)),
-    canDelete: (_c, scope) => scope !== "own",
+    owns: (c, scope, team, r) => scope === "all" || (scope !== "finance" && (r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)))),
+    canDelete: (_c, scope) => scope === "all" || scope === "team",
+  },
+  "external-sales": {
+    table: "crm_external_sales", soft: false,
+    cols: (d) => ({ owner_id: asUuid(d.salespersonId) }),
+    owns: (c, scope, team, r) => scope === "all" || (scope !== "finance" && (r.owner_id === c.id || (scope === "team" && !!r.owner_id && team.includes(r.owner_id)))),
+    canDelete: (_c, scope) => scope === "all",
   },
   "email-logs": {
     table: "crm_email_logs", soft: false,
@@ -72,14 +79,38 @@ const SPECS: Record<string, Spec> = {
   },
 };
 
+/** external sales: new = pending; only a leader/operations decides, never on their own entry; who/when come from the server */
+function externalRule(d: any, old: any | null, c: Caller, scope: CrmScope): string | null {
+  const amount = Number(d.amount);
+  if (!(amount > 0) || amount > 1e12) return "the amount must be a positive number";
+  if (!old) { d.status = "pending"; delete d.confirmedBy; delete d.confirmedDate; return null; }
+  if (d.status !== old.status) {
+    if (d.status !== "pending" && !(scope === "all" || scope === "team")) return "only a team leader or operations can confirm or reject a sale";
+    if (d.status !== "pending" && String(d.salespersonId) === c.id && scope !== "all") return "you cannot decide on your own sale";
+    if (d.status === "pending") { delete d.confirmedBy; delete d.confirmedDate; }
+    else { d.confirmedBy = c.name; d.confirmedDate = nowIso().slice(0, 10); }
+  } else { d.confirmedBy = old.confirmedBy; d.confirmedDate = old.confirmedDate; if (scope === "own") { d.amount = old.amount; d.salespersonId = old.salespersonId; } }
+  return null;
+}
+
 const out = (r: any) => ({ ...r.data, id: r.id, _rev: r.updated_at || r.created_at });
 
 for (const [name, spec] of Object.entries(SPECS)) {
-  route("GET", `/crm/${name}`, async ({ c }) => {
+  route("GET", `/crm/${name}`, async ({ c, query }) => {
     needCrm(c);
     if (name === "email-logs" && !can(c, "canViewSalesMail") && crmScope(c) !== "all") throw forbidden();
     const scope = crmScope(c);
+    const since = query.get("since");
     let q: any = admin.from(spec.table).select("*");
+    if (since && !isNaN(Date.parse(since))) {
+      // delta: only rows changed after `since`, plus ids removed since then (cheap: one indexed query)
+      const iso = new Date(since).toISOString();
+      const { data: ch } = await q.gt("updated_at", iso).order("updated_at", { ascending: true }).limit(5000);
+      const team0 = scope === "team" ? await teamIds(c) : [];
+      const live = (ch || []).filter((r: any) => !r.deleted_at && spec.owns(c, scope, team0, r)).map(out);
+      const gone = (ch || []).filter((r: any) => r.deleted_at || !spec.owns(c, scope, team0, r)).map((r: any) => r.id);
+      return { delta: true, rows: live, removed: gone, now: nowIso() };
+    }
     if (spec.soft) q = q.is("deleted_at", null);
     if (name === "email-logs") q = q.order("received_at", { ascending: false, nullsFirst: false }).limit(500);
     else q = q.order("created_at", { ascending: false }).limit(10000);
@@ -101,6 +132,9 @@ for (const [name, spec] of Object.entries(SPECS)) {
     if (name === "email-logs" && scope !== "all") throw forbidden();
     const team = scope === "team" ? await teamIds(c) : [];
     const saved: any[] = [], conflicts: string[] = [], rejected: { id: string; reason: string }[] = [], idMap: Record<string, string> = {};
+    const auditRows: any[] = [];
+    const audit = (leadId: string, a: { action: string; from?: string; to?: string; note?: string }) =>
+      auditRows.push({ lead_id: leadId, actor_id: c.id, actor_name: c.name, action: a.action, from_value: a.from ?? null, to_value: a.to ?? null, note: a.note ?? null });
 
     for (const raw of upserts) {
       if (!isObj(raw) || typeof raw.id !== "string" || !ID_RE.test(raw.id)) { rejected.push({ id: String(raw?.id ?? ""), reason: "bad id" }); continue; }
@@ -127,12 +161,28 @@ for (const [name, spec] of Object.entries(SPECS)) {
           if (new Date(rev).getTime() !== new Date(ex.updated_at).getTime()) { conflicts.push(id); continue; }
           if (name === "leads") {
             const newAssignee = asUuid(d.assignedSalespersonId);
+            let assigneeName: string | undefined;
             if ((newAssignee || null) !== (ex.assigned_to || null)) {
-              if (scope === "own") { rejected.push({ id, reason: "only a team leader or operations can reassign a lead" }); continue; }
+              if (scope === "own" || scope === "finance") { rejected.push({ id, reason: "only a team leader or operations can reassign a lead" }); continue; }
               if (scope === "team" && newAssignee && !team.includes(newAssignee)) { rejected.push({ id, reason: "that person is not in your team" }); continue; }
+              if (newAssignee) {
+                const { data: au } = await admin.from("app_users").select("name,active").eq("id", newAssignee).maybeSingle();
+                if (!au || au.active === false) { rejected.push({ id, reason: "that user cannot receive leads" }); continue; }
+                assigneeName = au.name;
+              } else assigneeName = "";
             }
+            if (scope === "finance") { // accounts receivable may only confirm cash, through its own call
+              rejected.push({ id, reason: "accounts receivable confirms cash from the Won Deals page" }); continue;
+            }
+            const san = sanitizeLead(d, ex, c, scope, assigneeName);
+            if (san.error) { rejected.push({ id, reason: san.error }); continue; }
+            san.audits.forEach((a) => audit(id, a));
           }
           if ((name === "tasks" || name === "activities") && scope === "own" && asUuid(d.salespersonId) !== c.id) { rejected.push({ id, reason: "not yours" }); continue; }
+          if (name === "external-sales") {
+            const err = externalRule(d, ex.data, c, scope);
+            if (err) { rejected.push({ id, reason: err }); continue; }
+          }
           const u = await admin.from(spec.table).update({ data: d, ...spec.cols(d, c) }).eq("id", id).eq("updated_at", ex.updated_at).select("*");
           if (u.error) throw new Error("update");
           if (!u.data?.length) { conflicts.push(id); continue; }
@@ -144,8 +194,17 @@ for (const [name, spec] of Object.entries(SPECS)) {
             if (scope === "own" && as && as !== c.id) { rejected.push({ id, reason: "you can only create leads for yourself" }); continue; }
             if (scope === "team" && as && !team.includes(as)) { rejected.push({ id, reason: "that person is not in your team" }); continue; }
             if (scope === "own" && !as) { d.assignedSalespersonId = c.id; d.assignedSalespersonName = c.name; }
+            if (scope === "finance") { rejected.push({ id, reason: "not allowed" }); continue; }
+            const san = sanitizeLead(d, null, c, scope);
+            if (san.error) { rejected.push({ id, reason: san.error }); continue; }
+            san.audits.forEach((a) => audit(id, a));
           }
           if ((name === "tasks" || name === "activities") && scope === "own") { d.salespersonId = c.id; }
+          if (name === "external-sales") {
+            if (scope === "own") { d.salespersonId = c.id; d.salespersonName = c.name; }
+            const err = externalRule(d, null, c, scope);
+            if (err) { rejected.push({ id, reason: err }); continue; }
+          }
           const ins = await admin.from(spec.table).insert({ id, data: d, ...spec.cols(d, c), ...(name === "leads" ? { created_by: c.id } : {}) }).select("*").single();
           if (ins.error) {
             if (name === "leads" && d.emailId) { rejected.push({ id, reason: "a lead for this e-mail already exists" }); continue; }
@@ -166,12 +225,14 @@ for (const [name, spec] of Object.entries(SPECS)) {
           if (!ID_RE.test(id)) continue;
           const { data: ex } = await admin.from(spec.table).select("*").eq("id", id).maybeSingle();
           if (!ex || !spec.owns(c, scope, team, ex)) continue;
+          if (name === "leads") audit(id, { action: "delete", from: ex.data?.status, note: `${ex.data?.customerName || ""} (${ex.data?.assignedSalespersonName || "unassigned"})` });
           if (spec.soft) await admin.from(spec.table).update({ deleted_at: nowIso() }).eq("id", id);
           else await admin.from(spec.table).delete().eq("id", id);
         }
         if (deletes.length) await logActivity(c, `Delete CRM ${name}`, `${deletes.length} row(s) deleted`, "ticket");
       }
     }
+    if (auditRows.length) await admin.from("crm_lead_audit").insert(auditRows.slice(0, 2000));
     return { success: true, saved, conflicts, rejected, idMap };
   });
 }
@@ -206,7 +267,7 @@ route("POST", "/crm/leads/route", async ({ req, c }) => {
   const agent = await chooseAgent(ex.data, q);
   if (!agent) return { success: true, assigned: false, lead: out(ex) };
   const now = nowIso();
-  const d = { ...ex.data, assignedSalespersonId: agent.id, assignedSalespersonName: agent.name, assignedDate: now, status: "Assigned", lastUpdated: now };
+  const d = { ...ex.data, assignedSalespersonId: agent.id, assignedSalespersonName: agent.name, assignedDate: now, lastUpdated: now };
   d.timeline = [...(d.timeline || []), { id: rid(), timestamp: now, type: "Assignment", user: "System", title: "Auto Assigned", description: `Lead assigned to ${agent.name} (${q.assignmentMethod}).` }];
   const u = await admin.from("crm_leads").update({ data: d, ...leadColumns(d) }).eq("id", id).is("assigned_to", null).select("*");
   if (!u.data?.length) return { success: true, assigned: false, lead: out(ex) };

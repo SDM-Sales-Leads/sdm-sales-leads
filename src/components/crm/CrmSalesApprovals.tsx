@@ -13,6 +13,7 @@ import {
   FileText
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { toast } from 'sonner';
 
 interface CrmSalesApprovalsProps {
   leads: Lead[];
@@ -30,11 +31,12 @@ export const CrmSalesApprovals: React.FC<CrmSalesApprovalsProps> = ({ leads, onL
     currentRole === 'System Administrator' || 
     currentRole === 'Sales Manager' || 
     currentRole === 'Sales Operations Manager' || 
+    currentRole === 'Sales Operation' ||
     (currentRole?.toLowerCase() || '').includes('admin');
 
   const handleAction = (reqId: string, status: 'Approved' | 'Rejected') => {
     if (!hasOverridePermission) {
-      alert('Unauthorized. Only Sales Operations Managers and Administrators have operational override authorization.');
+      toast.error('Only Sales Operation and administrators can approve or reject.');
       return;
     }
 
@@ -50,7 +52,7 @@ export const CrmSalesApprovals: React.FC<CrmSalesApprovalsProps> = ({ leads, onL
     if (req && status === 'Approved' && req.type === 'Lead Assignment Override') {
       const target = req.targetSalespersonName;
       if (!target) {
-        alert('This request has no target salesperson; assign the lead manually.');
+        toast.error('This request has no target salesperson; assign the lead manually.');
         return;
       }
       const crmLeads = crmService.getLeads();
@@ -74,6 +76,7 @@ export const CrmSalesApprovals: React.FC<CrmSalesApprovalsProps> = ({ leads, onL
           ]
         };
       });
+      // the server decides: if it refuses the owner change it shows its own reason and reloads the lead
       crmService.saveLeads(updated);
       onLeadsUpdated();
     }

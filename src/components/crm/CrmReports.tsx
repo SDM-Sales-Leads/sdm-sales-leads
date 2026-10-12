@@ -1,352 +1,310 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Lead } from './types';
-import { 
-  BarChart, 
-  Bar, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  Legend, 
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  LineChart,
-  Line
-} from 'recharts';
-import { 
-  TrendingUp, 
-  Users, 
-  Target, 
-  Coins, 
-  Activity, 
-  Award,
-  ChevronRight,
-  Printer,
-  Download
-} from 'lucide-react';
+import { Printer, Download } from 'lucide-react';
+import { useAuth } from '../../services/AuthContext';
+import {
+  Analysis, Agg, Breakdown, DEFAULT_FILTERS, Filters, STAGE_NAMES, STAGE_WEIGHT, analyse, buckets, crmScopeOf, dataHealth, fmtDay, fmtEGP, fmtPct, isManagerScope,
+  mean, pc, periodRange, prepare, selectPool, todayISO,
+} from './leadMetrics';
+import { Card, BarRow, FilterBar, InfoTip, Kpi, Pill } from './CrmMetricsUi';
+import { SOURCES, isMarketingSource, statusStage } from './leadConfig';
 
 interface CrmReportsProps {
   leads: Lead[];
 }
-
-const COLORS = ['#D32F2F', '#1976D2', '#388E3C', '#FBC02D', '#7B1FA2', '#E64A19', '#00796B', '#455A64'];
 
 // SLA outcome of one lead: 'met' | 'violated' | null (no/invalid deadline = not measurable)
 const slaOutcome = (l: Lead, nowMs: number): 'met' | 'violated' | null => {
   if (!l.slaDeadline) return null;
   const deadline = new Date(l.slaDeadline).getTime();
   if (!Number.isFinite(deadline)) return null;
-  if (['Won', 'Lost'].includes(l.status)) {
+  const stage = statusStage(l.status);
+  if (stage === 'won' || stage === 'lost') {
     const closed = new Date(l.lastUpdated || l.date).getTime();
     if (!Number.isFinite(closed)) return null;
     return closed <= deadline ? 'met' : 'violated';
   }
   return deadline - nowMs < 0 ? 'violated' : 'met';
 };
-const pct = (a: number, b: number): number | null => (b > 0 ? Math.round((a / b) * 100) : null);
+
+const TH = 'py-2 px-2 text-[10px] uppercase text-brand-gray font-bold tracking-wide';
+const TD = 'py-2 px-2 font-mono';
+const csvCell = (v: unknown) => {
+  let s = String(v ?? '');
+  if (/^[=+\-@]/.test(s)) s = `'${s}`; // spreadsheet formula guard
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+type Col = { head: string; info?: string; cell: (b: Breakdown) => React.ReactNode; right?: boolean };
+const BreakTable: React.FC<{ rows: Breakdown[]; first: string; cols: Col[]; limit?: number; empty?: string }> = ({ rows, first, cols, limit = 30, empty = 'No data in this period.' }) => (
+  <div className="overflow-x-auto">
+    <table className="w-full text-left text-xs">
+      <thead>
+        <tr className="border-b border-brand-gray/15">
+          <th className={TH}>{first}</th>
+          {cols.map((c) => <th key={c.head} className={`${TH} text-right`}><span className="inline-flex items-center gap-1">{c.head}{c.info && <InfoTip text={c.info} />}</span></th>)}
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-brand-gray/10 font-semibold text-brand-black">
+        {rows.length === 0 && <tr><td colSpan={cols.length + 1} className="py-6 text-center text-brand-gray">{empty}</td></tr>}
+        {rows.slice(0, limit).map((b) => (
+          <tr key={b.key} className="hover:bg-brand-gray/5">
+            <td className="py-2 px-2 font-bold max-w-[220px] truncate" title={b.label}>{b.label}</td>
+            {cols.map((c) => <td key={c.head} className={`${TD} text-right`}>{c.cell(b)}</td>)}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    {rows.length > limit && <p className="text-[10px] text-brand-gray mt-2">Showing the top {limit} of {rows.length}.</p>}
+  </div>
+);
+
+const byRevenue = (a: Breakdown, b: Breakdown) => b.agg.wonValue - a.agg.wonValue || b.agg.won - a.agg.won || b.agg.total - a.agg.total;
 
 export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
-  // Aggregate KPIs
-  const kpis = useMemo(() => {
-    const total = leads.length;
-    const won = leads.filter(l => l.status === 'Won').length;
-    const lost = leads.filter(l => l.status === 'Lost').length;
-    const conversionRate = pct(won, total);
-    
-    const activeOpps = leads.filter(l => !['New', 'Assigned', 'Lost', 'Duplicate', 'Won'].includes(l.status)).length;
+  const { user, permissions } = useAuth();
+  const scope = crmScopeOf(user, permissions);
+  const manager = isManagerScope(scope);
+  const [f, setF] = useState<Filters>(DEFAULT_FILTERS);
 
-    // SLA tracking
-    const nowMs = Date.now();
-    let slaTotal = 0;
-    let slaViolated = 0;
-    let slaMet = 0;
+  const all = useMemo(() => prepare(leads), [leads]);
+  const range = useMemo(() => periodRange(f.period, f.from, f.to), [f.period, f.from, f.to]);
+  const pool = useMemo(() => selectPool(all, f, range), [all, f, range]);
+  const A: Analysis = useMemo(() => analyse(pool, range, f.period), [pool, range, f.period]);
+  const t: Agg = A.total;
+  const trend = useMemo(() => buckets(pool, range, f.period), [pool, range, f.period]);
+  const health = useMemo(() => dataHealth(all, todayISO()), [all]);
 
-    leads.forEach(l => {
-      const o = slaOutcome(l, nowMs);
-      if (o === null) return;
-      slaTotal++;
-      if (o === 'met') slaMet++; else slaViolated++;
-    });
+  const owners = useMemo(() => {
+    const m = new Map<string, string>();
+    all.forEach((p) => { if (p.owner && !m.has(p.owner)) m.set(p.owner, p.ownerName || p.owner); });
+    return [...m.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
+  }, [all]);
+  const sources = useMemo(() => {
+    const s = new Set<string>(SOURCES);
+    all.forEach((p) => { if (p.source !== 'Not recorded') s.add(p.source); });
+    return [...s].sort();
+  }, [all]);
 
-    const slaComplianceRate = pct(slaMet, slaTotal);
+  // deals won in the period, newest closing date first
+  const deals = useMemo(() => {
+    const allTime = f.period === 'all';
+    return pool.filter((p) => p.won && (allTime || (p.closing >= range.from && p.closing <= range.to))).sort((a, b) => b.closing.localeCompare(a.closing));
+  }, [pool, range, f.period]);
 
-    return {
-      total,
-      won,
-      lost,
-      conversionRate,
-      activeOpps,
-      slaTotal,
-      slaViolated,
-      slaMet,
-      slaComplianceRate
-    };
-  }, [leads]);
+  const sla = useMemo(() => {
+    const now = Date.now(); let met = 0, viol = 0;
+    pool.forEach((p) => { const o = slaOutcome(p.l, now); if (o === 'met') met++; else if (o === 'violated') viol++; });
+    return { met, viol, rate: pc(met, met + viol) };
+  }, [pool]);
 
-  // Leaders statistics
-  const agentLeaderboard = useMemo(() => {
-    const map: Record<string, { total: number; won: number; slaTotal: number; slaMet: number }> = {};
-    const nowMs = Date.now();
-    leads.forEach(l => {
-      const agent = l.assignedSalespersonName || 'Unassigned';
-      if (!map[agent]) {
-        map[agent] = { total: 0, won: 0, slaTotal: 0, slaMet: 0 };
-      }
-      map[agent].total++;
-      if (l.status === 'Won') {
-        map[agent].won++;
-      }
-      const o = slaOutcome(l, nowMs);
-      if (o !== null) {
-        map[agent].slaTotal++;
-        if (o === 'met') map[agent].slaMet++;
-      }
-    });
+  const exportDeals = () => {
+    const head = ['Closing date', 'Lead', 'Client', 'Company', 'Project', 'Source', 'Salesperson', 'Deal value (EGP)', 'Area (sqm)', 'Plot', 'Cash status'];
+    const rows = deals.map((p) => [p.closing, p.id, p.l.customerName, p.l.companyName || '', p.project, p.source, p.ownerName, p.value || '', p.area || '', p.l.plotNo || '', p.l.cashStatus === 'confirmed' ? 'Confirmed' : 'Pending']);
+    const csv = '﻿' + [head, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const a = document.createElement('a'); a.href = url; a.download = `deals-won-${range.from}_${range.to}.csv`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
 
-    return Object.entries(map).map(([name, data]) => ({
-      name,
-      total: data.total,
-      won: data.won,
-      conversion: pct(data.won, data.total),
-      slaCompliance: pct(data.slaMet, data.slaTotal),
-      slaTotal: data.slaTotal,
-      slaMet: data.slaMet
-    })).sort((a, b) => (b.slaCompliance ?? -1) - (a.slaCompliance ?? -1));
-  }, [leads]);
+  const maxLost = A.byReason[0]?.count || 0;
+  const lostTotal = A.byReason.reduce((s, r) => s + r.count, 0);
+  const stageRows = STAGE_NAMES.slice(0, 5).map((name, i) => ({ name, n: A.byStage[i] || 0, w: STAGE_WEIGHT[i] }));
+  const openMax = Math.max(1, ...stageRows.map((s) => s.n));
 
-  // Leads by source statistics
-  const leadsBySource = useMemo(() => {
-    const map: Record<string, number> = {};
-    leads.forEach(l => {
-      const src = l.source || 'Other';
-      map[src] = (map[src] || 0) + 1;
-    });
-    return Object.entries(map).map(([name, value]) => ({ name, value }));
-  }, [leads]);
-
-  // Lead Funnel stage distribution
-  const funnelData = useMemo(() => {
-    const stages = ['New', 'Assigned', 'Contacted', 'Follow Up', 'Meeting Scheduled', 'Negotiation', 'Quotation Sent', 'Won'];
-    return stages.map(stage => ({
-      stage,
-      count: leads.filter(l => l.status === stage).length
-    }));
-  }, [leads]);
-
-  // Project distribution SLA stats
-  const projectSlaStats = useMemo(() => {
-    const map: Record<string, { total: number; met: number; violated: number }> = {};
-    const nowMs = Date.now();
-    leads.forEach(l => {
-      const proj = l.project || 'Unknown';
-      if (!map[proj]) {
-        map[proj] = { total: 0, met: 0, violated: 0 };
-      }
-      const o = slaOutcome(l, nowMs);
-      if (o !== null) {
-        map[proj].total++;
-        if (o === 'met') map[proj].met++; else map[proj].violated++;
-      }
-    });
-
-    return Object.entries(map).map(([name, data]) => ({
-      name,
-      complianceRate: pct(data.met, data.total),
-      total: data.total,
-      met: data.met,
-      violated: data.violated
-    })).sort((a, b) => (b.complianceRate ?? -1) - (a.complianceRate ?? -1));
-  }, [leads]);
+  const rateCols: Col[] = [
+    { head: 'Leads', cell: (b) => b.agg.total },
+    { head: 'Reached', info: 'Contacted leads (and % of this row\'s leads).', cell: (b) => `${b.agg.contacted} (${fmtPct(pc(b.agg.contacted, b.agg.total))})` },
+    { head: 'Qualified', cell: (b) => b.agg.qualified },
+    { head: 'Offer / meeting', cell: (b) => b.agg.opportunity },
+    { head: 'Won', cell: (b) => b.agg.won },
+    { head: 'Conversion', info: 'Won ÷ leads of this row.', cell: (b) => <Pill v={pc(b.agg.won, b.agg.total)} good={5} ok={1} dp={1} /> },
+    { head: 'Win rate', info: 'Won ÷ contacted leads of this row.', cell: (b) => <Pill v={pc(b.agg.won, b.agg.contacted)} good={10} ok={3} dp={1} /> },
+    { head: 'Revenue', cell: (b) => (b.agg.wonWithValue ? fmtEGP(b.agg.wonValue) : '—') },
+    { head: 'Lost', info: 'Lost, Not Interested and Low Budget, with % of contacted leads.', cell: (b) => `${b.agg.lost} (${fmtPct(pc(b.agg.lost, b.agg.contacted))})` },
+  ];
 
   return (
     <div className="space-y-6 text-xs" id="crm-reports-root">
-      
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         <div>
-          <h3 className="text-xl font-bold text-brand-black flex items-center gap-2">
-            <span>Executive Sales Analytics & Reports</span>
-            <span className="text-xs bg-brand-red/10 text-brand-red font-bold px-2.5 py-0.5 rounded-full">
-              Intelligence suite
-            </span>
-          </h3>
-          <p className="text-xs text-brand-gray/80 mt-1">
-            Analyze sales pipeline conversion rates, agent performance leaderboards, lead velocities, and SLA status tracking.
-          </p>
+          <h3 className="text-xl font-bold text-brand-black">Sales Reports</h3>
+          <p className="text-xs text-brand-gray/80 mt-1">{manager ? 'Team-wide figures for the leads you manage.' : 'Your own figures.'} Every column header with an info icon says what it counts and against what.</p>
         </div>
-
         <div className="flex gap-2">
-          <button onClick={() => window.print()} className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm">
-            <Printer size={13} />
-            <span>Print Report</span>
+          <button onClick={exportDeals} disabled={!deals.length} className="bg-brand-gray/10 hover:bg-brand-gray/20 disabled:opacity-40 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
+            <Download size={13} /><span>Export deals (CSV)</span>
+          </button>
+          <button onClick={() => window.print()} className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5">
+            <Printer size={13} /><span>Print</span>
           </button>
         </div>
       </div>
 
-      {/* Analytical KPI Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        
-        <div className="bg-white border border-brand-gray/20 p-5 rounded-2xl shadow-xs">
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-[10px] uppercase font-bold text-brand-gray tracking-wider">Total Pipeline Inquiries</span>
-            <span className="w-7 h-7 rounded-lg bg-brand-red/10 text-brand-red flex items-center justify-center">
-              <Activity size={14} />
-            </span>
-          </div>
-          <p className="text-2xl font-black text-brand-black font-mono">{kpis.total}</p>
-          <div className="flex items-center gap-1.5 text-[10px] text-brand-gray font-bold mt-2">
-            <span>All leads on record</span>
-          </div>
+      <FilterBar f={f} set={setF} owners={manager ? owners : undefined} sources={sources} rangeLabel={`${range.label} · ${pool.length} leads`} />
+
+      {/* deals won */}
+      <Card title="Deals won" info="Leads with status Won whose closing date is in the period (typed closing date, else EOI date on the EOI path, else reservation / EOI / contract date, else lead date). Value is the cash value in EGP. 'Cash pending' = Accounts Receivable has not confirmed the cash yet; only Accounts Receivable can confirm.">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <Kpi label="Deals" value={t.won} info="Number of won deals in the period." tone="text-emerald-600" />
+          <Kpi label="Value" value={t.wonWithValue ? fmtEGP(t.wonValue) : '—'} sub={`${t.wonWithValue} of ${t.won} have a value`} info="Sum of the deal value (EGP) of those deals." />
+          <Kpi label="Cash confirmed" value={t.cashConfirmed ? fmtEGP(t.cashConfirmedValue) : t.won ? '—' : '—'} sub={`${t.cashConfirmed} deals`} info="Deals whose cash Accounts Receivable has confirmed." tone="text-emerald-600" />
+          <Kpi label="Cash pending" value={t.cashPending && t.cashPendingValue ? fmtEGP(t.cashPendingValue) : '—'} sub={`${t.cashPending} deals`} info="Won deals not yet confirmed by Accounts Receivable." tone="text-amber-600" />
+          <Kpi label="Area sold" value={t.wonArea ? `${Math.round(t.wonArea).toLocaleString('en-US')} sqm` : '—'} info="Sum of the sold area on those deals (only deals with an area)." />
         </div>
-
-        <div className="bg-white border border-brand-gray/20 p-5 rounded-2xl shadow-xs">
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-[10px] uppercase font-bold text-brand-gray tracking-wider">Historical Conversion Rate</span>
-            <span className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center">
-              <Target size={14} />
-            </span>
-          </div>
-          <p className="text-2xl font-black text-brand-black font-mono">{kpis.conversionRate === null ? '—' : `${kpis.conversionRate}%`}</p>
-          <div className="flex items-center gap-1.5 text-[10px] text-brand-gray font-bold mt-2">
-            <span>Ratio of WON contracts to total leads</span>
-          </div>
-        </div>
-
-        <div className="bg-white border border-brand-gray/20 p-5 rounded-2xl shadow-xs">
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-[10px] uppercase font-bold text-brand-gray tracking-wider">SLA Compliance Rate</span>
-            <span className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center">
-              <Coins size={14} />
-            </span>
-          </div>
-          <p className="text-2xl font-black text-brand-black font-mono">{kpis.slaComplianceRate === null ? '—' : `${kpis.slaComplianceRate}%`}</p>
-          <div className="flex items-center gap-1.5 text-[10px] text-brand-gray font-bold mt-2">
-            <span>SLA compliance of processed inquiries</span>
-          </div>
-        </div>
-
-        <div className="bg-white border border-brand-gray/20 p-5 rounded-2xl shadow-xs">
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-[10px] uppercase font-bold text-brand-gray tracking-wider">Active SLA Violations</span>
-            <span className="w-7 h-7 rounded-lg bg-purple-50 text-purple-700 flex items-center justify-center">
-              <Award size={14} />
-            </span>
-          </div>
-          <p className="text-2xl font-black text-rose-600 font-mono">{kpis.slaViolated}</p>
-          <div className="flex items-center gap-1.5 text-[10px] text-brand-gray font-bold mt-2">
-            <span>Leads currently in SLA violation status</span>
-          </div>
-        </div>
-
-      </div>
-
-      {/* Recharts Graphical grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        {/* Project SLA Compliance chart */}
-        <div className="bg-white border border-brand-gray/20 rounded-2xl p-5 shadow-xs space-y-4">
-          <h4 className="font-extrabold text-brand-black text-sm uppercase tracking-wider">Project SLA Compliance Rate (%)</h4>
-          <div className="h-64 font-bold">
-            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-              <BarChart data={projectSlaStats}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="name" fontSize={10} tickLine={false} />
-                <YAxis fontSize={10} tickLine={false} />
-                <Tooltip formatter={(value) => `${Number(value)}% SLA Compliance`} />
-                <Bar dataKey="complianceRate" fill="#D32F2F" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Lead Sources Pie chart */}
-        <div className="bg-white border border-brand-gray/20 rounded-2xl p-5 shadow-xs space-y-4">
-          <h4 className="font-extrabold text-brand-black text-sm uppercase tracking-wider">Inbound Leads share by Source channel</h4>
-          <div className="h-64 flex flex-col sm:flex-row items-center justify-around font-bold">
-            <div className="w-1/2 h-full">
-              <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                <PieChart>
-                  <Pie
-                    data={leadsBySource}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={55}
-                    outerRadius={80}
-                    paddingAngle={4}
-                    dataKey="value"
-                  >
-                    {leadsBySource.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-            </div>
-            
-            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-2">
-              {leadsBySource.map((src, idx) => (
-                <div key={src.name} className="flex items-center gap-2 text-[10px] font-extrabold">
-                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS[idx % COLORS.length] }} />
-                  <span className="text-brand-gray">{src.name}:</span>
-                  <span className="text-brand-black font-mono">{src.value}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-      </div>
-
-      {/* Leaders leaderboard table */}
-      <div className="bg-white border border-brand-gray/20 rounded-2xl p-5 shadow-xs space-y-4">
-        <h4 className="font-extrabold text-brand-black text-sm uppercase tracking-wider">Sales Representative Performance Leaderboard</h4>
-        
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="bg-brand-gray/5 border-b border-brand-gray/15 text-brand-gray text-[10px] font-bold uppercase tracking-wider">
-                <th className="py-3 px-4">Representative Name</th>
-                <th className="py-3 px-3 text-center">Inquiries Handled</th>
-                <th className="py-3 px-3 text-center">Won Contracts</th>
-                <th className="py-3 px-3 text-center">Lead Conversion %</th>
-                <th className="py-3 px-4 text-right">SLA Compliance Rate</th>
-              </tr>
-            </thead>
+          <table className="w-full text-left">
+            <thead><tr className="border-b border-brand-gray/15">
+              {['Closing date', 'Lead', 'Client', 'Project', 'Salesperson', 'Value (EGP)', 'Cash'].map((h, i) => <th key={h} className={`${TH} ${i === 5 ? 'text-right' : ''}`}>{h}</th>)}
+            </tr></thead>
             <tbody className="divide-y divide-brand-gray/10 font-semibold text-brand-black">
-              {agentLeaderboard.map((item, index) => (
-                <tr key={item.name} className="hover:bg-brand-gray/5 transition-colors">
-                  <td className="py-3 px-4 flex items-center gap-2 font-bold">
-                    <span className="w-5 h-5 rounded-full bg-brand-red text-white flex items-center justify-center font-black text-[9px]">
-                      {index + 1}
-                    </span>
-                    {item.name}
-                  </td>
-                  <td className="py-3 px-3 text-center font-mono text-brand-gray">{item.total}</td>
-                  <td className="py-3 px-3 text-center font-mono text-emerald-700 font-bold">{item.won}</td>
-                  <td className="py-3 px-3 text-center">
-                    <span className="bg-emerald-100 text-emerald-800 font-mono text-[10px] font-black px-2 py-0.5 rounded-full">
-                      {item.conversion === null ? '—' : `${item.conversion}%`}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-right">
-                    <span className={`font-mono font-extrabold px-3 py-1 rounded-full text-[10px] ${
-                      item.slaCompliance !== null && item.slaCompliance >= 90 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                      item.slaCompliance !== null && item.slaCompliance >= 70 ? 'bg-amber-100 text-amber-800 border border-amber-300' :
-                      'bg-rose-100 text-rose-800 border border-rose-300'
-                    }`}>
-                      {item.slaCompliance === null ? '—' : `${item.slaCompliance}%`}
-                    </span>
-                  </td>
+              {deals.length === 0 && <tr><td colSpan={7} className="py-6 text-center text-brand-gray">No deals won in this period.</td></tr>}
+              {deals.slice(0, 100).map((p) => (
+                <tr key={p.id} className="hover:bg-brand-gray/5">
+                  <td className="py-2 px-2">{fmtDay(p.closing)}</td>
+                  <td className="py-2 px-2 font-mono text-brand-red">{p.id}</td>
+                  <td className="py-2 px-2 max-w-[200px] truncate" title={p.l.companyName || p.l.customerName}>{p.l.companyName || p.l.customerName}</td>
+                  <td className="py-2 px-2">{p.project}</td>
+                  <td className="py-2 px-2">{p.ownerName || '—'}</td>
+                  <td className={`${TD} text-right`}>{p.value ? p.value.toLocaleString('en-US') : '—'}</td>
+                  <td className="py-2 px-2"><span className={`px-2 py-0.5 rounded-full text-[9px] font-black ${p.l.cashStatus === 'confirmed' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>{p.l.cashStatus === 'confirmed' ? 'Confirmed' : 'Pending'}</span></td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {deals.length > 100 && <p className="text-[10px] text-brand-gray mt-2">Showing the latest 100 of {deals.length}. Export for the full list.</p>}
         </div>
+      </Card>
+
+      {/* people */}
+      {manager && (
+        <Card title="Salesperson performance" info="One row per owner, over the leads in the period. Conversion = won ÷ the person's leads; win rate = won ÷ contacted. Pipeline = value of the person's open leads that carry a value. Avg cycle = mean (won date − lead date).">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead><tr className="border-b border-brand-gray/15">
+                {['Salesperson', 'Leads', 'Reached', 'Qualified', 'Offer / meeting', 'Won', 'Lost', 'Conversion', 'Revenue', 'Pipeline', 'Avg deal', 'Avg cycle'].map((h, i) => <th key={h} className={`${TH} ${i ? 'text-right' : ''}`}>{h}</th>)}
+              </tr></thead>
+              <tbody className="divide-y divide-brand-gray/10 font-semibold text-brand-black">
+                {A.byOwner.length === 0 && <tr><td colSpan={12} className="py-6 text-center text-brand-gray">No assigned leads in this period.</td></tr>}
+                {[...A.byOwner].sort(byRevenue).map((b) => {
+                  const g = b.agg; const cyc = mean(g.cycles);
+                  return (
+                    <tr key={b.key} className="hover:bg-brand-gray/5 cursor-pointer" onClick={() => setF({ ...f, owner: f.owner === b.key ? '' : b.key })} title="Click to filter the whole page by this person">
+                      <td className="py-2 px-2 font-bold">{b.label}</td>
+                      <td className={`${TD} text-right`}>{g.total}</td>
+                      <td className={`${TD} text-right`}>{g.contacted} <span className="text-brand-gray">({fmtPct(pc(g.contacted, g.total))})</span></td>
+                      <td className={`${TD} text-right`}>{g.qualified}</td>
+                      <td className={`${TD} text-right`}>{g.opportunity}</td>
+                      <td className={`${TD} text-right text-emerald-700`}>{g.won}</td>
+                      <td className={`${TD} text-right`}>{g.lost}</td>
+                      <td className={`${TD} text-right`}><Pill v={pc(g.won, g.total)} good={5} ok={1} dp={1} /></td>
+                      <td className={`${TD} text-right`}>{g.wonWithValue ? fmtEGP(g.wonValue) : '—'}</td>
+                      <td className={`${TD} text-right`}>{g.openWithValue ? fmtEGP(g.pipelineValue) : '—'}</td>
+                      <td className={`${TD} text-right`}>{g.wonWithValue ? fmtEGP(g.wonValue / g.wonWithValue) : '—'}</td>
+                      <td className={`${TD} text-right`}>{cyc == null ? '—' : `${Math.round(cyc)} d`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* pipeline */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card title="Open pipeline" info="Open leads (not Won, Lost, Not Interested, Low Budget, Wrong Number) by the furthest stage reached. Probability: contacted 5%, qualified 15%, offer or meeting 35%, negotiation 60%. Expected deals = open leads × probability. Values only include leads that carry a deal value.">
+          <div className="space-y-2">
+            {stageRows.slice(1).map((s) => <BarRow key={s.name} label={s.name} value={s.n} max={openMax} right={`${s.n} · ${Math.round(s.w * 100)}%`} />)}
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-center pt-2 border-t border-brand-gray/10">
+            <div><p className="text-lg font-black font-mono">{t.open}</p><p className="text-[10px] text-brand-gray font-bold uppercase">Open leads</p></div>
+            <div><p className="text-lg font-black font-mono">{t.weightedCount.toFixed(1)}</p><p className="text-[10px] text-brand-gray font-bold uppercase">Expected deals</p></div>
+            <div><p className="text-lg font-black font-mono">{t.openWithValue ? fmtEGP(t.weightedValue) : '—'}</p><p className="text-[10px] text-brand-gray font-bold uppercase">Weighted value</p></div>
+          </div>
+          <p className="text-[10px] text-brand-gray">{t.openWithValue} of {t.open} open leads carry a value ({t.openWithValue ? fmtEGP(t.pipelineValue) : '—'} unweighted); the rest are counted but add no value.</p>
+        </Card>
+
+        <Card title="Why we lose" info="Reason on the lost lead (the team's list). Not Interested and Low Budget leads without a reason are listed under their status. 'Not recorded' = Lost with no reason typed. Percent is of all lost leads in the period.">
+          <div className="space-y-2">
+            {A.byReason.length === 0 && <p className="text-brand-gray text-center py-6">No lost leads in this period.</p>}
+            {A.byReason.slice(0, 12).map((r) => <BarRow key={r.key} label={r.key} value={r.count} max={maxLost} color="#455A64" right={`${r.count} · ${fmtPct(pc(r.count, lostTotal))}`} />)}
+          </div>
+          {A.byReason.some((r) => r.value > 0) && <p className="text-[10px] text-brand-gray">Value lost where a deal value is recorded: {fmtEGP(A.byReason.reduce((s, r) => s + r.value, 0))}.</p>}
+        </Card>
       </div>
 
+      {/* speed */}
+      <Card title="Speed to first contact" info="Wait = first-contact time − lead date. Bands: up to 1 day, up to 2 days, up to 7 days, longer. 'Never contacted' = has an owner, no first contact, not won. Measured only on leads with a first-contact time.">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {[
+            ['Same or next day', A.speed.bands.same], ['Within two days', A.speed.bands.two], ['Inside a week', A.speed.bands.week], ['More than a week', A.speed.bands.more],
+          ].map(([l, n]) => (
+            <div key={String(l)} className="border border-brand-gray/15 rounded-xl p-3 text-center">
+              <p className="text-lg font-black font-mono">{n as number}</p>
+              <p className="text-[10px] text-brand-gray font-bold uppercase">{l}</p>
+              <p className="text-[10px] text-brand-gray">{fmtPct(pc(n as number, A.speed.measured))}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-[10px] text-brand-gray">Never contacted: {A.speed.never}. Leads measured: {A.speed.measured}.</p>
+      </Card>
+
+      {/* monthly */}
+      {trend.unit === 'month' && trend.rows.length >= 2 && (
+        <Card title="Month by month" info="Leads = lead date in the month. Reached = of those leads, contacted. Won = closing date in the month. Lost = lost leads by their lead date. Conversion = won ÷ leads of the month; growth is against the previous month.">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead><tr className="border-b border-brand-gray/15">{['Month', 'Leads', 'Growth', 'Reached', 'Won', 'Revenue', 'Lost', 'Conversion'].map((h, i) => <th key={h} className={`${TH} ${i ? 'text-right' : ''}`}>{h}</th>)}</tr></thead>
+              <tbody className="divide-y divide-brand-gray/10 font-semibold">
+                {[...trend.rows].reverse().slice(0, 36).map((r, i, arr) => {
+                  const prevRow = arr[i + 1];
+                  const g = prevRow ? (prevRow.leads === 0 ? (r.leads > 0 ? 'new' : '—') : `${Math.round(((r.leads - prevRow.leads) / prevRow.leads) * 100)}%`) : '—';
+                  return (
+                    <tr key={r.key}>
+                      <td className="py-2 px-2 font-bold">{r.label}</td><td className={`${TD} text-right`}>{r.leads}</td><td className={`${TD} text-right text-brand-gray`}>{g}</td>
+                      <td className={`${TD} text-right`}>{r.reached}</td><td className={`${TD} text-right text-emerald-700`}>{r.won}</td>
+                      <td className={`${TD} text-right`}>{r.wonValue ? fmtEGP(r.wonValue) : '—'}</td><td className={`${TD} text-right`}>{r.lost}</td>
+                      <td className={`${TD} text-right`}>{fmtPct(pc(r.won, r.leads), 1)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* sources and projects */}
+      <Card title="Source performance" info="Marketing channels are every source except Personal, Management and BD Research (self-generated, tagged below). Conversion = won ÷ leads from that source; win rate = won ÷ contacted. Sorted by revenue, then leads.">
+        <BreakTable rows={[...A.bySource].sort(byRevenue)} first="Source" cols={[{ head: 'Type', cell: (b) => <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${b.key !== 'Not recorded' && !isMarketingSource(b.key) ? 'bg-indigo-100 text-indigo-800' : 'bg-brand-gray/10 text-brand-gray'}`}>{b.key !== 'Not recorded' && !isMarketingSource(b.key) ? 'self-generated' : 'marketing'}</span> }, ...rateCols]} />
+      </Card>
+      <Card title="By project" info="Project name after fixing typos and website page names. 'Not recorded' = no usable project. Same column definitions as the source table.">
+        <BreakTable rows={[...A.byProject].sort((a, b) => b.agg.total - a.agg.total)} first="Project" cols={rateCols} />
+      </Card>
+
+      {/* record quality */}
+      <Card title={<>Record quality {health.score != null && <Pill v={health.score} good={85} ok={65} />}</>} info="How complete the lead records are, over ALL leads you can see (not the period). Each line is a % with its own threshold; the overall score is the average of the eight.">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2">
+          {health.rows.map((h) => (
+            <div key={h.key} className="flex items-center gap-2 text-[11px]">
+              <span className="w-52 font-bold text-brand-black flex items-center gap-1">{h.label}<InfoTip text={`${h.note}. Target ${h.good}% (acceptable ${h.ok}%). Based on ${h.of} leads.`} /></span>
+              <div className="flex-1 h-2 bg-brand-gray/10 rounded-full overflow-hidden"><div className={`h-full rounded-full ${h.pct == null ? '' : h.pct >= h.good ? 'bg-emerald-500' : h.pct >= h.ok ? 'bg-amber-400' : 'bg-rose-500'}`} style={{ width: `${h.pct ?? 0}%` }} /></div>
+              <span className="w-24 text-right font-mono font-bold text-brand-gray">{h.pct == null ? '—' : `${h.pct.toFixed(0)}%`} <span className="font-normal">({h.n})</span></span>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* SLA (leads that carry a deadline) */}
+      <Card title="SLA compliance" info="Only leads that carry an SLA deadline are measured. Open leads: met while the deadline is in the future. Won or lost leads: met if the last update was before the deadline.">
+        <div className="grid grid-cols-3 gap-3 text-center">
+          <Kpi label="Compliance" value={fmtPct(sla.rate)} info="Met ÷ (met + violated)." />
+          <Kpi label="Met" value={sla.met} info="Leads inside their SLA." tone="text-emerald-600" />
+          <Kpi label="Violated" value={sla.viol} info="Leads past their SLA deadline." tone="text-rose-600" />
+        </div>
+      </Card>
     </div>
   );
 };
+

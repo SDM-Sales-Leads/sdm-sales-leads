@@ -16,6 +16,13 @@ import { CrmActivities } from './CrmActivities';
 import { CrmReports } from './CrmReports';
 import { CrmImportExport } from './CrmImportExport';
 import { CrmPlotsInventory } from './CrmPlotsInventory';
+import { CrmFinance } from './CrmFinance';
+import { CrmContracts } from './CrmContracts';
+import { CrmTargets } from './CrmTargets';
+import { CrmExternalSales } from './CrmExternalSales';
+import { CrmAudit } from './CrmAudit';
+import { CrmOffers } from './CrmOffers';
+import { CrmDuplicates } from './CrmDuplicates';
 import { 
   TrendingUp, 
   Users, 
@@ -239,6 +246,13 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
         {activeSubTab === 'plots-inventory' && (
           <CrmPlotsInventory />
         )}
+        {activeSubTab === 'offers' && <CrmOffers leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'finance' && <CrmFinance leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'contracts' && <CrmContracts leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'targets' && <CrmTargets leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'external-sales' && <CrmExternalSales leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'duplicates' && <CrmDuplicates leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
+        {activeSubTab === 'audit' && <CrmAudit leads={leads} onLeadsUpdated={() => loadCrmData(true)} currentRole={currentRole} setActiveSubTab={setActiveSubTab} />}
         {activeSubTab === 'import-export' && (
           <CrmImportExport 
             leads={leads} 

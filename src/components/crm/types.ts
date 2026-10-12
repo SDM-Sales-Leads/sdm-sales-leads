@@ -1,4 +1,8 @@
-export type LeadStatus = 
+ /** Working vocabulary of the sales team (see leadConfig.ts). The older English statuses stay valid for existing rows. */
+export type LeadStatus =
+  | 'Sent WhatsApp' | 'No Answer – Sent WhatsApp' | 'Out of Coverage – Sent WhatsApp' | 'Wrong Number' | 'Mail Sent'
+  | 'Call Back' | 'Client Will Call Back' | 'Need Time to Study Our Offer' | 'Offer Sent – Following Up'
+  | 'Scheduled Meeting' | 'Site Visit Scheduled' | 'Low Budget'
   | 'New' 
   | 'Assigned' 
   | 'Contacted' 
@@ -27,7 +31,7 @@ export type LostReason =
   | 'Cancelled' 
   | 'Other';
 
-export type LeadPriority = 'Urgent' | 'High' | 'Normal' | 'Low';
+export type LeadPriority = 'VIP' | 'Urgent' | 'High' | 'Medium' | 'Normal' | 'Low';
 
 export interface CommentNote {
   id: string;
@@ -81,8 +85,48 @@ export interface Lead {
   description: string;
   comments: CommentNote[];
   attachments: Attachment[];
-  lostReason?: LostReason;
+  lostReason?: LostReason | string;
   lostComment?: string;
+  lostCategory?: string;
+  // ---- fields carried over from the sales team's previous CRM (all optional) ----
+  legacyId?: string;               // id in the previous system
+  legacyOwnerName?: string;        // owner as written in the previous system (linked to a user by name)
+  refNo?: string;
+  phone2?: string;
+  industry?: string;
+  nationality?: string;
+  qualification?: '' | 'Qualified' | 'Unqualified';
+  temperature?: '' | 'Hot' | 'Warm' | 'Cold';
+  qualNotes?: string;
+  notes?: string;                  // free notes (previous system's Notes column)
+  meetingDate?: string;            // YYYY-MM-DD (call back / meeting / site visit slot)
+  meetingTime?: string;            // HH:MM
+  nextFollowUpTime?: string;       // HH:MM
+  lastContactDate?: string;        // YYYY-MM-DD
+  firstContactAt?: string;         // ISO, first contact by the current owner (SLA)
+  reassignCount?: number;
+  eoiApplicable?: boolean | null;  // true = EOI -> Reservation -> Contract; false = Reservation -> Contract
+  eoiDate?: string;
+  reservationDate?: string;
+  contractDate?: string;
+  wonDate?: string;                // closing date (derived unless typed by hand)
+  dealValue?: number;              // cash value of the deal, EGP (required for Won)
+  totalSoldValue?: number;         // EGP
+  soldArea?: number;               // sqm
+  plotNo?: string;
+  cashStatus?: '' | 'pending' | 'confirmed';
+  cashBy?: string;
+  cashDate?: string;
+  offerSent?: boolean;
+  offerDate?: string;
+  offerDueDate?: string;
+  bdReady?: boolean;
+  mergedInto?: string;
+  dupCleared?: boolean;
+  srcOriginal?: string;
+  srcReq?: { from: string; to: string; by: string; byName: string; at: string; note?: string };
+  contract?: ContractRecord;       // contract lifecycle after Won
+
   timeline: TimelineEvent[];
   slaDeadline?: string; // ISO string
   nextFollowUpDate?: string; // YYYY-MM-DD
@@ -219,4 +263,41 @@ export interface PlotRecord {
   quarterOfSale?: string;
   salesRep?: string;
   leadSource?: string;
+}
+
+// ---------------------------------------------------------------------------------------------
+// contract lifecycle (kept inside the Won lead) and new record kinds
+// ---------------------------------------------------------------------------------------------
+export type ContractStepStatus = 'Pending' | 'In Progress' | 'Done' | 'Blocked' | 'Skipped';
+export interface ContractStep {
+  key: string;                       // see CONTRACT_STEPS in leadConfig.ts
+  department: string;
+  status: ContractStepStatus;
+  startedAt?: string;
+  doneAt?: string;
+  dueAt?: string;
+  by?: string;
+  note?: string;
+}
+export interface ContractRecord {
+  number?: string;
+  status: 'Draft' | 'In Progress' | 'On Hold' | 'Signed' | 'Cancelled';
+  steps: ContractStep[];
+  blocker?: { reason: string; department: string; since: string; by: string } | null;
+  signedAt?: string;
+  history: { at: string; by: string; text: string }[];
+}
+
+export interface ExternalSale {
+  id: string;
+  salespersonId: string;
+  salespersonName: string;
+  saleDate: string;
+  amount: number;
+  project: string;
+  description: string;
+  status: 'pending' | 'confirmed' | 'rejected';
+  confirmedBy?: string;
+  confirmedDate?: string;
+  createdAt: string;
 }

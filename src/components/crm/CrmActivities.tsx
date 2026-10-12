@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useDeferredValue } from 'react';
+import { useAuth } from '../../services/AuthContext';
 import { Lead, TimelineEvent } from './types';
 import { crmService } from './crmService';
 import { 
@@ -11,6 +12,8 @@ import {
   Search,
   Sparkles,
   Bookmark,
+  MapPin,
+  UserCheck,
   X
 } from 'lucide-react';
 import { motion } from 'motion/react';
@@ -22,8 +25,12 @@ interface CrmActivitiesProps {
 }
 
 export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpdated, currentRole }) => {
-  const [activeTab, setActiveTab] = useState<'All' | 'Call' | 'Meeting' | 'Email' | 'Comment' | 'Status Change'>('All');
+  const { user } = useAuth();
+  const [activeTab, setActiveTab] = useState<'All' | 'Call' | 'WhatsApp' | 'Meeting' | 'Visit' | 'Email' | 'Comment' | 'Status Change'>('All');
   const [searchTerm, setSearchTerm] = useState('');
+  const deferredSearch = useDeferredValue(searchTerm);   // typing stays smooth with tens of thousands of entries
+  const [limit, setLimit] = useState(100);                // only the newest entries are drawn; more on request
+  useEffect(() => { setLimit(100); }, [activeTab, deferredSearch]);
   const [showAddModal, setShowAddModal] = useState(false);
 
   // Form states
@@ -46,7 +53,7 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
 
   // Extract all activity logs with their associated lead metadata
   const allActivities = useMemo(() => {
-    const list: { activity: TimelineEvent; leadId: string; leadName: string; project: string }[] = [];
+    const list: { activity: TimelineEvent; leadId: string; leadName: string; project: string; ts: number }[] = [];
     leads.forEach(l => {
       if (l.timeline) {
         l.timeline.forEach(act => {
@@ -54,21 +61,22 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
             activity: act,
             leadId: l.id,
             leadName: l.customerName,
-            project: l.project
+            project: l.project,
+            ts: tsOf(act.timestamp),
           });
         });
       }
     });
 
     // Sort by timestamp descending
-    return list.sort((a, b) => tsOf(b.activity.timestamp) - tsOf(a.activity.timestamp));
+    return list.sort((a, b) => b.ts - a.ts);
   }, [leads]);
 
   // Filter activities
   const filteredActivities = useMemo(() => {
     return allActivities.filter(item => {
       const matchesTab = activeTab === 'All' || item.activity.type === activeTab;
-      const q = searchTerm.toLowerCase();
+      const q = deferredSearch.toLowerCase();
       const has = (v?: string) => (v || '').toLowerCase().includes(q);
       const matchesSearch = 
         has(item.leadName) || has(item.activity.title) || has(item.activity.description) ||
@@ -76,7 +84,7 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
       
       return matchesTab && matchesSearch;
     });
-  }, [allActivities, activeTab, searchTerm]);
+  }, [allActivities, activeTab, deferredSearch]);
 
   const handleAddActivity = (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,7 +105,7 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
       title: activityTitle.trim(),
       description: activityDesc.trim(),
       timestamp: new Date().toISOString(),
-      user: 'Administrator',
+      user: user?.name || 'Unknown',
     };
 
     const updatedLeads = freshLeads.map(l => {
@@ -153,8 +161,8 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 text-xs font-bold">
         
         {/* Type filters */}
-        <div className="flex bg-brand-gray/10 p-1.5 rounded-2xl gap-1">
-          {(['All', 'Call', 'Meeting', 'Email', 'Comment', 'Status Change'] as const).map(tab => (
+        <div className="flex flex-wrap bg-brand-gray/10 p-1.5 rounded-2xl gap-1">
+          {(['All', 'Call', 'WhatsApp', 'Meeting', 'Visit', 'Email', 'Comment', 'Status Change'] as const).map(tab => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -182,7 +190,7 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
       <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-6">
         <div className="relative border-l border-brand-gray/20 pl-6 space-y-6">
           {filteredActivities.length > 0 ? (
-            filteredActivities.map((item) => {
+            filteredActivities.slice(0, limit).map((item) => {
               let IconComponent = Bookmark;
               let iconColor = 'bg-brand-gray/10 text-brand-gray';
 
@@ -198,6 +206,15 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
               } else if (item.activity.type === 'Comment') {
                 IconComponent = MessageSquare;
                 iconColor = 'bg-purple-100 text-purple-800';
+              } else if (item.activity.type === 'WhatsApp') {
+                IconComponent = MessageSquare;
+                iconColor = 'bg-green-100 text-green-700';
+              } else if (item.activity.type === 'Visit') {
+                IconComponent = MapPin;
+                iconColor = 'bg-amber-100 text-amber-700';
+              } else if (item.activity.type === 'Assignment' || item.activity.type === 'Status Change') {
+                IconComponent = UserCheck;
+                iconColor = 'bg-sky-100 text-sky-700';
               } else if (item.activity.type === 'Creation' || item.activity.type === 'Import') {
                 IconComponent = Sparkles;
                 iconColor = 'bg-brand-red/10 text-brand-red';
@@ -240,6 +257,11 @@ export const CrmActivities: React.FC<CrmActivitiesProps> = ({ leads, onLeadsUpda
             })
           ) : (
             <p className="text-center text-brand-gray py-8 text-xs font-semibold">No historical communication logs found for your filtered criteria.</p>
+          )}
+          {filteredActivities.length > limit && (
+            <button onClick={() => setLimit((n) => n + 200)} className="text-xs font-bold text-brand-red hover:underline">
+              Show more ({filteredActivities.length - limit} older entries)
+            </button>
           )}
         </div>
       </div>

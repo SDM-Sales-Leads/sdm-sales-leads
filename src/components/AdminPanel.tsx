@@ -36,11 +36,11 @@ export const AdminPanel: React.FC = () => {
   const [actionStatus, setActionStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isEditingUser, setIsEditingUser] = useState<number | string | null>(null);
-  const [editUserData, setEditUserData] = useState({ name: '', email: '', role: '', department: '', teamLeaderId: undefined as string | number | undefined });
+  const [editUserData, setEditUserData] = useState({ name: '', email: '', role: '', department: '', teamLeaderId: undefined as string | number | undefined, annualTarget: '' as string | number });
   const [dbStatus, setDbStatus] = useState<'cloud' | 'local'>('local');
 
   // Form states
-  const [newUser, setNewUser] = useState({ name: '', email: '', password: '', role: 'Requester', department: 'Development' as Department, teamLeaderId: undefined as string | number | undefined });
+  const [newUser, setNewUser] = useState({ name: '', email: '', password: '', role: 'Requester', department: 'Development' as Department, teamLeaderId: undefined as string | number | undefined, annualTarget: '' as string | number });
   const [newCat, setNewCat] = useState({ type: '', subtype: '', department: 'Development' as Department });
 
   useEffect(() => {
@@ -158,8 +158,11 @@ export const AdminPanel: React.FC = () => {
     e.preventDefault();
     setActionStatus(null);
     try {
-      const created = await adminService.addUser(newUser);
-      setNewUser({ name: '', email: '', password: '', role: 'Requester', department: 'Development' as Department, teamLeaderId: undefined });
+      const { annualTarget: newTarget, ...userBody } = newUser;
+      const created = await adminService.addUser(userBody);
+      // the create call does not take the target: set it right after (admins only, sales roles)
+      if (newTarget !== '' && created?.id) await adminService.updateUser(created.id, { annualTarget: Number(newTarget) });
+      setNewUser({ name: '', email: '', password: '', role: 'Requester', department: 'Development' as Department, teamLeaderId: undefined, annualTarget: '' });
       loadData();
       setActionStatus({ type: 'success', message: created?.temporaryPassword
         ? `User added. Temporary password (shown only now, give it to the user): ${created.temporaryPassword}`
@@ -257,13 +260,15 @@ export const AdminPanel: React.FC = () => {
       email: user.email, 
       role: user.role || '', 
       department: user.department || '',
-      teamLeaderId: user.teamLeaderId
+      teamLeaderId: user.teamLeaderId,
+      annualTarget: user.annualTarget ?? ''
     });
   };
 
   const handleUpdateUser = async (userId: string | number) => {
     try {
-      await adminService.updateUser(userId, editUserData);
+      const { annualTarget: tgt, ...rest } = editUserData;
+      await adminService.updateUser(userId, { ...rest, annualTarget: tgt === '' ? null : Number(tgt) });
       setIsEditingUser(null);
       loadData();
       setActionStatus({ type: 'success', message: 'User updated successfully!' });
@@ -485,6 +490,15 @@ export const AdminPanel: React.FC = () => {
                   ))}
                 </select>
               )}
+              {(newUser.role === 'Sales Rep' || newUser.role === 'Sales Team' || newUser.role === 'Sales Team Leader') && (
+                <input
+                  type="number" min={0} step={1000}
+                  className="input-field col-span-2"
+                  placeholder="Annual target (EGP), optional"
+                  value={newUser.annualTarget}
+                  onChange={e => setNewUser({...newUser, annualTarget: e.target.value})}
+                />
+              )}
               <button type="submit" className="btn-primary col-span-2">Add User</button>
             </form>
 
@@ -564,6 +578,15 @@ export const AdminPanel: React.FC = () => {
                                 ))}
                               </select>
                             )}
+                            {(editUserData.role === 'Sales Rep' || editUserData.role === 'Sales Team' || editUserData.role === 'Sales Team Leader') && (
+                              <input
+                                type="number" min={0} step={1000}
+                                className="text-xs p-1 rounded border border-black/10 w-full"
+                                placeholder="Annual target (EGP)"
+                                value={editUserData.annualTarget}
+                                onChange={e => setEditUserData({...editUserData, annualTarget: e.target.value})}
+                              />
+                            )}
                             <div className="flex gap-2">
                               <button onClick={() => handleUpdateUser(u.id)} className="text-[10px] font-bold text-emerald-600">SAVE</button>
                               <button onClick={() => setIsEditingUser(null)} className="text-[10px] font-bold text-brand-gray">CANCEL</button>
@@ -595,6 +618,11 @@ export const AdminPanel: React.FC = () => {
                           {u.department && (
                             <span className="text-[10px] font-medium text-brand-gray px-1">
                               {u.department}
+                            </span>
+                          )}
+                          {u.annualTarget > 0 && (
+                            <span className="text-[10px] font-medium text-brand-gray px-1">
+                              Target {Number(u.annualTarget).toLocaleString('en-US')} EGP / yr
                             </span>
                           )}
                         </div>
@@ -832,6 +860,13 @@ export const AdminPanel: React.FC = () => {
                           <PermissionToggle label="Sales Reports" active={!!rolePermissions[selectedRoleIndex].canViewSalesReports} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesReports', val)} />
                           <PermissionToggle label="Plots Inventory" active={!!rolePermissions[selectedRoleIndex].canViewSalesPlotsInventory} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesPlotsInventory', val)} />
                           <PermissionToggle label="Bulk Transfer" active={!!rolePermissions[selectedRoleIndex].canViewSalesTransfer} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesTransfer', val)} />
+                          <PermissionToggle label="Won Deals / Cash (AR)" active={!!rolePermissions[selectedRoleIndex].canViewSalesFinance} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesFinance', val)} />
+                          <PermissionToggle label="Confirm cash received" active={!!rolePermissions[selectedRoleIndex].canConfirmCash} onChange={(val) => updatePermission(selectedRoleIndex, 'canConfirmCash', val)} />
+                          <PermissionToggle label="Contracts (view)" active={!!rolePermissions[selectedRoleIndex].canViewSalesContracts} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesContracts', val)} />
+                          <PermissionToggle label="Contracts (manage)" active={!!rolePermissions[selectedRoleIndex].canManageContracts} onChange={(val) => updatePermission(selectedRoleIndex, 'canManageContracts', val)} />
+                          <PermissionToggle label="Targets & My Report" active={!!rolePermissions[selectedRoleIndex].canViewSalesTargets} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesTargets', val)} />
+                          <PermissionToggle label="External Sales" active={!!rolePermissions[selectedRoleIndex].canViewSalesExternal} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesExternal', val)} />
+                          <PermissionToggle label="Lead audit trail" active={!!rolePermissions[selectedRoleIndex].canViewSalesAudit} onChange={(val) => updatePermission(selectedRoleIndex, 'canViewSalesAudit', val)} />
                         </div>
                       )}
                     </div>

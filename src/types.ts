@@ -185,6 +185,13 @@ export interface RolePermissions {
   canViewSalesReports?: boolean;
   canViewSalesPlotsInventory?: boolean;
   canViewSalesTransfer?: boolean;
+  canViewSalesFinance?: boolean;
+  canConfirmCash?: boolean;
+  canViewSalesContracts?: boolean;
+  canManageContracts?: boolean;
+  canViewSalesTargets?: boolean;
+  canViewSalesExternal?: boolean;
+  canViewSalesAudit?: boolean;
 };
 
 export interface EmailImportLog {

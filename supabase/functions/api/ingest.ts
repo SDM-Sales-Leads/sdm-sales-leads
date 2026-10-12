@@ -331,7 +331,7 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
     requiredSize: parsed.requiredSize ?? "",
     budget: parsed.budget ?? undefined,
     source: parsed.source || "Email",
-    priority: parsed.priority || "Normal",
+    priority: parsed.priority || "Medium",
     description: parsed.description,
     status: "New",
     date: now.slice(0, 10),
@@ -351,8 +351,8 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
     lead.assignedSalespersonId = agent.id;
     lead.assignedSalespersonName = agent.name;
     lead.assignedDate = now;
-    lead.status = "Assigned";
-    lead.timeline.push({ id: rid(), timestamp: now, type: "Assignment", user: "System", title: "Auto Assigned", description: `Lead assigned to ${agent.name} (${q.assignmentMethod}).` });
+    // the team's vocabulary has no "Assigned" status: an owned lead stays "New" until it is worked
+        lead.timeline.push({ id: rid(), timestamp: now, type: "Assignment", user: "System", title: "Auto Assigned", description: `Lead assigned to ${agent.name} (${q.assignmentMethod}).` });
   }
   const { error } = await admin.from("crm_leads").insert({ id, data: lead, ...leadColumns(lead) });
   if (error) throw new HttpError(500, "Could not save the lead");

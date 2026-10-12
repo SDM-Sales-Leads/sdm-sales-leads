@@ -37,7 +37,7 @@ route("POST", "/me/password-changed", async ({ c }) => {
 // ---------------------------------------------------------------------------------------------
 const userOut = (u: any) => ({
   id: u.id, name: u.name, email: u.email, role: u.role, department: u.department || undefined,
-  teamLeaderId: u.team_leader_id || undefined, active: u.active, leave: u.on_leave,
+  teamLeaderId: u.team_leader_id || undefined, active: u.active, leave: u.on_leave, annualTarget: u.annual_target ?? undefined,
 });
 
 route("GET", "/users", async () => {
@@ -90,6 +90,7 @@ route("POST", "/users", async ({ req, c }) => {
   const row = {
     id: created.user.id, email, name, role, department: str(b.department, 80) || null, team_leader_id: tl,
     active: true, on_leave: false, must_change_password: true,
+    annual_target: b.annualTarget !== undefined && Number.isFinite(Number(b.annualTarget)) && Number(b.annualTarget) >= 0 ? Number(b.annualTarget) : null,
   };
   const ins = await admin.from("app_users").insert(row);
   if (ins.error) {
@@ -97,7 +98,9 @@ route("POST", "/users", async ({ req, c }) => {
     throw new HttpError(500, "Could not save the user");
   }
   await logActivity(c, "Create User", `User ${name} (${role}) created`, "admin");
-  return { ...userOut(row), ...(generated ? { temporaryPassword: password } : {}) };
+  // leads imported from the previous CRM carry the owner's name: attach them to this person
+  const { data: linked } = await admin.rpc("crm_link_owner", { p_user: row.id, p_name: name });
+  return { ...userOut(row), ...(generated ? { temporaryPassword: password } : {}), linkedLeads: Number(linked) || 0 };
 });
 
 route("PUT", "/users/:id", async ({ req, c, params }) => {
@@ -116,6 +119,11 @@ route("PUT", "/users/:id", async ({ req, c, params }) => {
     upd.team_leader_id = tl;
   }
   if (b.leave !== undefined) upd.on_leave = !!b.leave;
+  if (b.annualTarget !== undefined) {
+    const t = b.annualTarget === null || b.annualTarget === "" ? null : Number(b.annualTarget);
+    if (t !== null && (!Number.isFinite(t) || t < 0 || t > 1e12)) throw bad("Invalid target");
+    upd.annual_target = t;
+  }
   if (b.role !== undefined) {
     const role = str(b.role, 60);
     if (!(await roleExists(role))) throw bad("Unknown role");
@@ -159,6 +167,7 @@ route("PUT", "/users/:id", async ({ req, c, params }) => {
     if (r.error) throw new HttpError(500, "Could not save the user");
   }
   await logActivity(c, "Update User", `User ${cur.name} updated`, "admin");
+  if (upd.name) await admin.rpc("crm_link_owner", { p_user: cur.id, p_name: upd.name });
   const { data: fresh } = await admin.from("app_users").select("*").eq("id", cur.id).single();
   return { ...userOut(fresh), ...(temporaryPassword ? { temporaryPassword } : {}) };
 });

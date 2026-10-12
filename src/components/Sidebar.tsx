@@ -27,6 +27,12 @@ import {
   UploadCloud,
   Sliders,
   Database,
+  Banknote,
+  FileSignature,
+  Target,
+  ArrowUpRight,
+  ShieldCheck,
+  FileText,
   Bell,
   Trash2,
   BellOff
@@ -290,6 +296,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'activities', label: 'Activities Feed', icon: Activity, permission: permissions?.canViewSalesActivities },
     { id: 'reports', label: 'Sales Reports', icon: BarChart, permission: permissions?.canViewSalesReports },
     { id: 'plots-inventory', label: 'Plots Inventory', icon: Database, permission: permissions?.canViewSalesPlotsInventory },
+    { id: 'offers', label: 'Offers', icon: FileText, permission: permissions?.canViewSalesLeads },
+    { id: 'finance', label: 'Won Deals & Cash', icon: Banknote, permission: permissions?.canViewSalesFinance },
+    { id: 'contracts', label: 'Contracts', icon: FileSignature, permission: permissions?.canViewSalesContracts },
+    { id: 'targets', label: 'Targets & My Report', icon: Target, permission: permissions?.canViewSalesTargets },
+    { id: 'external-sales', label: 'External Sales', icon: ArrowUpRight, permission: permissions?.canViewSalesExternal },
+    { id: 'audit', label: 'Lead Audit Trail', icon: ShieldCheck, permission: permissions?.canViewSalesAudit },
+    { id: 'duplicates', label: 'Duplicates', icon: GitMerge, permission: permissions?.canViewSalesTransfer || permissions?.canViewSalesRules },
     { id: 'import-export', label: 'Bulk Transfer', icon: UploadCloud, permission: permissions?.canViewSalesTransfer },
   ];
 

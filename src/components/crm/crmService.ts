@@ -2,6 +2,8 @@ import DOMPurify from "dompurify";
 import { toast } from 'sonner';
 import { Lead, Contact, Company, EmailImportLog, QueueSettings, SalespersonTask, SalespersonActivity, TimelineEvent } from './types';
 import { INITIAL_QUEUE_SETTINGS } from './mockData';
+import { phoneIntl } from './leadConfig';
+import { withSideEffects } from './leadRules';
 
 // Phone number normalizer
 export function normalizePhone(phone: string): string {
@@ -30,19 +32,60 @@ const pending: Record<Kind, number> = { leads: 0, contacts: 0, companies: 0, tas
 const queues: Partial<Record<Kind, Promise<void>>> = {};
 const ids: Record<'lead' | 'contact' | 'company', string[]> = { lead: [], contact: [], company: [] };
 
+let queueSettingsLoaded = false, queueSettingsAt = 0, lastDeltaAt = 0, autoUsers = 0;
+let autoTimer: ReturnType<typeof setInterval> | null = null;
+let autoOff: (() => void) | null = null;
+
+/** same phone = same normalised international number (or the last 10 digits when it cannot be repaired) */
+function dupPhoneKey(raw?: string): string {
+  const p = phoneIntl(raw);
+  if (p) return p;
+  const d = String(raw ?? '').replace(/\D/g, '');
+  return d.length >= 10 ? d.slice(-10) : '';
+}
+const GENERIC_LOCAL = new Set(['info', 'no', 'none', 'test', 'na', 'n/a', 'email', 'x', 'noemail', 'nomail']);
+function dupEmailKey(raw?: string): string {
+  const e = String(raw ?? '').trim().toLowerCase();
+  if (e.length < 3 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)) return '';
+  const [local, domain] = e.split('@');
+  if (GENERIC_LOCAL.has(local) && (local === 'info' || GENERIC_LOCAL.has(domain.split('.')[0]))) return '';
+  return e;
+}
+
 const stable = (r: any) => { const { _rev, ...rest } = r || {}; return JSON.stringify(rest); };
 const changed = () => window.dispatchEvent(new CustomEvent('crm-data-changed'));
 
+// The in-memory copy is the primary one (4,000+ leads are far too big to parse from storage on every call).
+// Storage is only a best-effort cache for small lists; the storage guard keeps it in sessionStorage.
+const STORAGE_MAX_ROWS = 1200;
+const persistTimers: Partial<Record<Kind, ReturnType<typeof setTimeout>>> = {};
+let dupIndex: { src: any[]; n: number; phone: Map<string, any[]>; email: Map<string, any[]> } | null = null;
+
 function read(kind: Kind): any[] {
+  const m = memory[kind];
+  if (m) return m;
+  let rows: any[] = [];
   try {
     const raw = localStorage.getItem(STORE[kind]);
-    if (raw) { const v = JSON.parse(raw); if (Array.isArray(v)) return v; }
-  } catch { /* fall through to memory */ }
-  return memory[kind] || [];
+    if (raw) { const v = JSON.parse(raw); if (Array.isArray(v)) rows = v; }
+  } catch { /* nothing cached */ }
+  memory[kind] = rows;
+  return rows;
+}
+function persistSoon(kind: Kind) {
+  if (persistTimers[kind]) clearTimeout(persistTimers[kind]);
+  persistTimers[kind] = setTimeout(() => {
+    const rows = memory[kind] || [];
+    try {
+      if (rows.length > STORAGE_MAX_ROWS) localStorage.removeItem(STORE[kind]);
+      else localStorage.setItem(STORE[kind], JSON.stringify(rows));
+    } catch { /* quota: the memory copy is used */ }
+  }, 1500);
 }
 function write(kind: Kind, rows: any[]) {
   memory[kind] = rows;
-  try { localStorage.setItem(STORE[kind], JSON.stringify(rows)); } catch { /* memory copy is used */ }
+  if (kind === 'leads') dupIndex = null;
+  persistSoon(kind);
 }
 function setBaseline(kind: Kind, rows: any[]) {
   const m = new Map<string, string>();
@@ -50,13 +93,78 @@ function setBaseline(kind: Kind, rows: any[]) {
   baseline[kind] = m;
 }
 
+// ---- delta refresh: only rows changed since the last answer travel (the full list is fetched once) ----
+const cursor: Partial<Record<Kind, string>> = {};
+const lastFull: Partial<Record<Kind, number>> = {};
+const inflight: Partial<Record<Kind, Promise<boolean | null>>> = {};
+const DELTA_KINDS: Kind[] = ['leads', 'contacts', 'companies', 'tasks', 'activities'];
+const OVERLAP_MS = 15_000;          // re-read the last seconds: merging is idempotent, missing a row is not
+const FULL_EVERY_MS = 15 * 60_000;  // safety net against a missed delete
+
+const cursorFrom = (iso: string | null | undefined) => {
+  const t = iso ? Date.parse(iso) : NaN;
+  return isNaN(t) ? undefined : new Date(t - OVERLAP_MS).toISOString();
+};
+
 async function pull(kind: Kind): Promise<any[] | null> {
   try {
+    const t0 = Date.now();
     const res = await fetch(`/api/crm/${kind}`);
     if (!res.ok) return null;
     const rows = await res.json();
-    return Array.isArray(rows) ? rows : null;
+    if (!Array.isArray(rows)) return null;
+    // the server's own clock (HTTP Date) avoids trusting this PC's clock; fall back to the request time
+    cursor[kind] = cursorFrom(res.headers.get('date')) || new Date(t0 - 10 * 60_000).toISOString();
+    lastFull[kind] = Date.now();
+    return rows;
   } catch { return null; }
+}
+
+/** merges the rows changed since the last answer. true = something changed, false = nothing, null = need a full load */
+function pullDelta(kind: Kind): Promise<boolean | null> {
+  if (inflight[kind]) return inflight[kind]!;
+  const run = async (): Promise<boolean | null> => {
+    const since = cursor[kind];
+    if (!since || !DELTA_KINDS.includes(kind)) return null;
+    let j: any;
+    try {
+      const res = await fetch(`/api/crm/${kind}?since=${encodeURIComponent(since)}`);
+      if (!res.ok) return null;
+      j = await res.json();
+    } catch { return null; }
+    if (!j || j.delta !== true || !Array.isArray(j.rows)) return null;
+    if (pending[kind] > 0) return false; // a save started meanwhile: the next refresh will merge
+    const nextCursor = cursorFrom(j.now);
+    const removed = new Set<string>((j.removed || []).map(String));
+    const cur = read(kind);
+    const idx = new Map<string, number>();
+    cur.forEach((r, i) => idx.set(String(r.id), i));
+    let next: any[] | null = null;
+    const fresh: any[] = [];
+    for (const r of j.rows) {
+      const id = String(r.id);
+      const i = idx.get(id);
+      if (i === undefined) { fresh.push(r); continue; }
+      if (cur[i]._rev === r._rev) continue; // our own save coming back: keep the same object
+      if (!next) next = cur.slice();
+      next[i] = r;
+    }
+    if (removed.size) {
+      const base = next || cur;
+      const kept = base.filter((r) => !removed.has(String(r.id)));
+      if (kept.length !== base.length) next = kept;
+    }
+    if (fresh.length) next = [...fresh.reverse(), ...(next || cur)]; // newest first, like the full list
+    if (nextCursor) cursor[kind] = nextCursor;
+    if (!next) return false;
+    write(kind, next);
+    for (const r of j.rows) baseline[kind].set(String(r.id), stable(r));
+    for (const id of removed) baseline[kind].delete(id);
+    return true;
+  };
+  const p = run().finally(() => { delete inflight[kind]; });
+  inflight[kind] = p;
+  return p;
 }
 
 async function flush(kind: Kind) {
@@ -138,29 +246,109 @@ function takeId(kind: 'lead' | 'contact' | 'company'): string {
 const saved = (kind: Kind) => (rows: any[]) => { write(kind, rows); void queue(kind); };
 
 export const crmService = {
-  /** Load everything this user may see. Skips a list while a save of it is still running. */
+  /**
+   * Load everything this user may see. Cheap and idempotent: after the first full load only the rows changed
+   * since then are fetched (a full reload happens at most every 15 min). Skips a list while a save of it is running.
+   */
   loadAll: async (): Promise<{ ok: boolean }> => {
-    const results = await Promise.all(KINDS.map(async (k) => [k, pending[k] > 0 ? null : await pull(k)] as const));
+    const results = await Promise.all(KINDS.map(async (k) => {
+      if (pending[k] > 0) return [k, null, false] as const;
+      const fullDue = !cursor[k] || !DELTA_KINDS.includes(k) || Date.now() - (lastFull[k] || 0) > FULL_EVERY_MS;
+      if (!fullDue) {
+        const d = await pullDelta(k);
+        if (d !== null) return [k, null, true] as const; // merged (or nothing new)
+      }
+      return [k, await pull(k), false] as const;
+    }));
     let ok = true;
-    for (const [k, rows] of results) {
-      if (rows) { write(k, rows); setBaseline(k, rows); } else if (pending[k] === 0) ok = false;
+    for (const [k, rows, viaDelta] of results) {
+      if (viaDelta) continue;
+      if (rows) {
+        // keep the same objects for rows that did not change, so row components and search caches stay valid
+        const old = new Map<string, any>();
+        for (const r of read(k)) old.set(String(r.id), r);
+        const merged = rows.map((r) => { const o = old.get(String(r.id)); return o && o._rev === r._rev ? o : r; });
+        write(k, merged); setBaseline(k, merged);
+      } else if (pending[k] === 0) ok = false;
     }
-    try {
-      const res = await fetch('/api/crm/queue-settings');
-      if (res.ok) localStorage.setItem('crm_queue_settings', JSON.stringify(await res.json()));
-    } catch { ok = false; }
+    if (!queueSettingsLoaded || Date.now() - queueSettingsAt > 10 * 60_000) {
+      try {
+        const res = await fetch('/api/crm/queue-settings');
+        if (res.ok) { localStorage.setItem('crm_queue_settings', JSON.stringify(await res.json())); queueSettingsLoaded = true; queueSettingsAt = Date.now(); }
+      } catch { ok = false; }
+    }
     refill('lead'); refill('contact'); refill('company');
     changed();
     return { ok };
   },
 
+  /**
+   * Cheap refresh: GET /api/crm/<kind>?since=... for every list, merged into memory (optimistic-lock _rev kept).
+   * Fires 'crm-data-changed' only when something changed. Safe to call often (throttled to once per 5 s).
+   */
+  refreshDelta: async (): Promise<{ changed: boolean }> => {
+    if (Date.now() - lastDeltaAt < 5000) return { changed: false };
+    lastDeltaAt = Date.now();
+    let any = false;
+    await Promise.all(DELTA_KINDS.map(async (k) => {
+      if (pending[k] > 0) return;
+      const d = await pullDelta(k);
+      if (d === true) any = true;
+      else if (d === null && !cursor[k]) { /* not loaded yet: loadAll does the first full load */ }
+      else if (d === null) { const rows = await pull(k); if (rows && pending[k] === 0) { write(k, rows); setBaseline(k, rows); any = true; } }
+    }));
+    if (any) changed();
+    return { changed: any };
+  },
+
+  /**
+   * Polls refreshDelta every ~90 s while the tab is visible, and when the window regains focus / becomes visible.
+   * Returns a stop function. Reference counted: call it from every screen that shows leads.
+   */
+  startAutoRefresh: (intervalMs = 90_000): (() => void) => {
+    autoUsers++;
+    if (autoUsers === 1) {
+      autoTimer = setInterval(() => { if (document.visibilityState === 'visible') void crmService.refreshDelta(); }, intervalMs);
+      const onWake = () => { if (document.visibilityState === 'visible') void crmService.refreshDelta(); };
+      window.addEventListener('focus', onWake);
+      document.addEventListener('visibilitychange', onWake);
+      autoOff = () => { window.removeEventListener('focus', onWake); document.removeEventListener('visibilitychange', onWake); };
+    }
+    let done = false;
+    return () => {
+      if (done) return; done = true;
+      autoUsers--;
+      if (autoUsers === 0) { if (autoTimer) clearInterval(autoTimer); autoTimer = null; autoOff?.(); autoOff = null; }
+    };
+  },
+
+  /** Other open leads with the same phone (phone or phone 2) or the same e-mail. Generic e-mails never count. */
+  findDuplicates: (probe: { phone?: string; phone2?: string; email?: string }, excludeId?: string): Lead[] => {
+    const leads = read('leads');
+    if (!dupIndex || dupIndex.src !== leads || dupIndex.n !== leads.length) {
+      const phone = new Map<string, any[]>(), email = new Map<string, any[]>();
+      const add = (m: Map<string, any[]>, k: string, l: any) => { if (!k) return; const a = m.get(k); if (a) { if (!a.includes(l)) a.push(l); } else m.set(k, [l]); };
+      for (const l of leads) {
+        if (l.mergedInto || l.status === 'Duplicate') continue;
+        add(phone, dupPhoneKey(l.phoneNumber), l); add(phone, dupPhoneKey(l.phone2), l); add(email, dupEmailKey(l.email), l);
+      }
+      dupIndex = { src: leads, n: leads.length, phone, email };
+    }
+    const out = new Map<string, any>();
+    for (const k of [dupPhoneKey(probe.phone), dupPhoneKey(probe.phone2)]) if (k) for (const l of dupIndex.phone.get(k) || []) out.set(l.id, l);
+    const ek = dupEmailKey(probe.email);
+    if (ek) for (const l of dupIndex.email.get(ek) || []) out.set(l.id, l);
+    if (excludeId) out.delete(excludeId);
+    return [...out.values()];
+  },
+
   // Getters (from this tab's cache; call loadAll first)
-  getLeads: (): Lead[] => read('leads'),
-  getContacts: (): Contact[] => read('contacts'),
-  getCompanies: (): Company[] => read('companies'),
-  getEmailLogs: (): EmailImportLog[] => read('email-logs'),
-  getTasks: (): SalespersonTask[] => read('tasks'),
-  getActivities: (): SalespersonActivity[] => read('activities'),
+  getLeads: (): Lead[] => read('leads').slice(),
+  getContacts: (): Contact[] => read('contacts').slice(),
+  getCompanies: (): Company[] => read('companies').slice(),
+  getEmailLogs: (): EmailImportLog[] => read('email-logs').slice(),
+  getTasks: (): SalespersonTask[] => read('tasks').slice(),
+  getActivities: (): SalespersonActivity[] => read('activities').slice(),
   getQueueSettings: (): QueueSettings => {
     try { const d = localStorage.getItem('crm_queue_settings'); if (d) return JSON.parse(d); } catch { /* default */ }
     return INITIAL_QUEUE_SETTINGS;
@@ -214,6 +402,7 @@ export const crmService = {
     const newId = takeId('lead');
 
     const newLead: Lead = {
+      ...leadData,            // the team's extra fields (phone 2, industry, nationality, qualification, ...)
       id: newId,
       emailId: leadData.emailId,
       date: leadData.date || new Date().toISOString(),
@@ -225,7 +414,7 @@ export const crmService = {
       companyName: leadData.companyName,
       requiredSize: leadData.requiredSize ?? '',
       budget: leadData.budget,
-      priority: leadData.priority || 'Normal',
+      priority: leadData.priority || 'Medium',
       status: leadData.status || 'New',
       description: leadData.description || '',
       comments: leadData.comments || [],
@@ -256,35 +445,48 @@ export const crmService = {
     return newLead;
   },
 
-  updateLead: (id: string, updates: Partial<Lead>, user: string): Lead => {
+  /**
+   * Updates one lead. The history is append-only: status changes push a timeline event, nothing is rewritten.
+   * `ctx.userId` lets the first-contact stamp (SLA) know who is acting. A refusal by the server arrives as a toast.
+   */
+  updateLead: (id: string, updates: Partial<Lead>, user: string, ctx?: { userId?: string }): Lead => {
     const leads = crmService.getLeads();
     const idx = leads.findIndex(l => l.id === id);
     if (idx === -1) throw new Error('Lead not found');
 
     const original = leads[idx];
-    const updated: Lead = {
+    let updated: Lead = {
       ...original,
       ...updates,
       timeline: [...(updates.timeline ?? original.timeline ?? [])],
       lastUpdated: new Date().toISOString()
     };
+    updated = withSideEffects(original, updated, { id: ctx?.userId });
 
-    // Append timeline changes for key fields
+    const ev = (type: TimelineEvent['type'], title: string, description: string) => updated.timeline.push({
+      id: Math.random().toString(36).substr(2, 9), timestamp: new Date().toISOString(), type, user, title, description,
+    });
     if (updates.status && updates.status !== original.status) {
-      updated.timeline.push({
-        id: Math.random().toString(36).substr(2, 9),
-        timestamp: new Date().toISOString(),
-        type: 'Status Change',
-        user,
-        title: 'Status Updated',
-        description: `Status changed from ${original.status} to ${updates.status}`
-      });
+      if (updates.status === 'Won') ev('Status Change', 'Deal Won', `Status changed from ${original.status} to Won. Deal value EGP ${Number(updated.dealValue || 0).toLocaleString('en-US')} (cash pending confirmation by accounts receivable).`);
+      else if (updates.status === 'Lost') ev('Status Change', 'Lead Closed as Lost', `Lost${updated.lostCategory ? ` (${updated.lostCategory})` : ''}: ${updated.lostReason || '—'}${updated.lostComment ? `. ${updated.lostComment}` : ''}`);
+      else ev('Status Change', 'Status Updated', `Status changed from ${original.status} to ${updates.status}`);
     }
+    if (updates.priority && updates.priority !== original.priority) ev('Status Change', 'Priority Updated', `Priority changed from ${original.priority} to ${updates.priority}`);
 
     leads[idx] = updated;
     crmService.saveLeads(leads);
     crmService.addActivityLog(user, 'Update Lead', `Updated CRM Sales Lead ${id} details`, 'ticket');
     return updated;
+  },
+
+  /** who changed what and when (owner, status, source, value, stage dates, cash, create, delete): written by the server */
+  fetchAudit: async (id: string): Promise<{ rows: any[]; error?: string }> => {
+    try {
+      const res = await fetch(`/api/crm/leads/${encodeURIComponent(id)}/audit`);
+      if (!res.ok) { let m = 'The change history is not available to you.'; try { m = (await res.json()).error || m; } catch { /* default */ } return { rows: [], error: m }; }
+      const j = await res.json();
+      return { rows: Array.isArray(j) ? j : (j.rows || []) };
+    } catch { return { rows: [], error: 'Could not reach the server.' }; }
   },
 
   parseEmailAndCreateLead: (emailLog: Partial<EmailImportLog>, user: string): { success: boolean, leadId?: string, error?: string, isDuplicate?: boolean } => {

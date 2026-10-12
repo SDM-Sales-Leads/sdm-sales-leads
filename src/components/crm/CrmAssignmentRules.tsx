@@ -1,6 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { AssignmentMethod, QueueSettings } from './types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { AssignmentMethod, Lead } from './types';
 import { crmService } from './crmService';
+import { isOpenStatus } from './leadConfig';
+import { dayOf, fmtDay, isEngaged, todayISO } from './leadMetrics';
+import { InfoTip } from './CrmMetricsUi';
 import { 
   GitMerge, 
   HelpCircle, 
@@ -25,69 +28,65 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
   const [activeStrategy, setActiveStrategy] = useState<AssignmentMethod>('Round Robin');
   const [showSavedToast, setShowSavedToast] = useState(false);
 
-  // Agent workload configs
-  const [agents, setAgents] = useState<any[]>([]);
+  // The leads are read from the cache of this tab (the same list the other pages use) and refreshed when it changes.
+  const [leads, setLeads] = useState<Lead[]>(() => crmService.getLeads());
+  const [people, setPeople] = useState<any[]>(() => crmService.getSalesPeople());
+  const [settings, setSettings] = useState(() => crmService.getQueueSettings());
 
   useEffect(() => {
-    const settings = crmService.getQueueSettings();
-    if (settings && settings.assignmentMethod) {
-      setActiveStrategy(settings.assignmentMethod);
-    }
-    
-    const realSalespeople = crmService.getSalesPeople();
-    const leads = crmService.getLeads();
-
-    setAgents(realSalespeople.map((s: any) => {
-      // Calculate activeLeads dynamically
-      const activeLeadsCount = leads.filter(l => 
-        (String(l.assignedSalespersonId) === String(s.id) || (l.assignedSalespersonName && l.assignedSalespersonName === s.name)) &&
-        !['Won', 'Lost', 'Duplicate', 'Invalid', 'Closed', 'Not Interested'].includes(l.status)
-      ).length;
-
-      return {
-        name: s.name,
-        status: s.leave ? 'Away' : (s.active ? 'Online' : 'Offline'),
-        // No invented defaults: personal weight/cap only when set; the cap otherwise comes from the queue settings
-        weight: typeof s.weight === 'number' && s.weight > 0 ? s.weight : null,
-        cap: Number(s.cap) > 0 ? Number(s.cap) : (Number(settings?.maxLeadsPerSalesperson) > 0 ? Number(settings.maxLeadsPerSalesperson) : null),
-        activeLeads: activeLeadsCount,
-        projects: Array.isArray(s.projects) ? s.projects : []
-      };
-    }));
+    const s = crmService.getQueueSettings();
+    if (s && s.assignmentMethod) setActiveStrategy(s.assignmentMethod);
+    const refresh = () => { setLeads(crmService.getLeads()); setPeople(crmService.getSalesPeople()); setSettings(crmService.getQueueSettings()); };
+    window.addEventListener('crm-data-changed', refresh);
+    return () => window.removeEventListener('crm-data-changed', refresh);
   }, []);
 
-  const strategies: { value: AssignmentMethod; title: string; description: string }[] = [
-    {
-      value: 'Round Robin',
-      title: 'Sequential Round Robin',
-      description: 'Rotates inbound inquiries sequentially among all active online agents, guaranteeing absolute equality in lead allocation.'
-    },
-    {
-      value: 'Project Based',
-      title: 'Project Specialization Matrix',
-      description: 'Matches leads to agents who specialize in the requested project (e.g. Industria West, Sokhna 360) first, falling back to Round Robin.'
-    },
-    {
-      value: 'Least Active Leads',
-      title: 'Active Capacity Load Balance',
-      description: 'Routes new inquiries to whichever online agent has the lowest ratio of (Active Leads / Maximum Allocation Cap).'
-    },
-    {
-      value: 'Priority Based',
-      title: 'Priority Multiplier',
-      description: 'Distributes leads according to customizable priority weighting mapped dynamically to sales agent conversion histories.'
-    },
-    {
-      value: 'VIP Customer Routing',
-      title: 'VIP Account Protection',
-      description: 'Reroutes large-scale inquiries or recurring clients to senior account executives automatically.'
-    },
-    {
-      value: 'Manual Assignment Only',
-      title: 'Central Inbound Triage',
-      description: 'Bypasses the automation queue entirely and locks new leads under a Manual Triage status for manual supervisor dispatch.'
+  // One pass over the leads for every person: nothing is scanned per row.
+  const fairness = useMemo(() => {
+    const today = todayISO();
+    const byId = new Map<string, { open: number; total: number; untouched: number; today: number }>();
+    const get = (k: string) => { let r = byId.get(k); if (!r) { r = { open: 0, total: 0, untouched: 0, today: 0 }; byId.set(k, r); } return r; };
+    let unassigned = 0;
+    const assigned: Lead[] = [];
+    for (const l of leads) {
+      if (l.mergedInto || l.status === 'Duplicate') continue;
+      const open = isOpenStatus(l.status);
+      const k = String(l.assignedSalespersonId || '');
+      if (!k) { if (open) unassigned++; continue; }
+      const r = get(k);
+      r.total++;
+      if (open) { r.open++; if (!isEngaged(l)) r.untouched++; }
+      if (dayOf(l.assignedDate) === today) r.today++;
+      if (l.assignedDate) assigned.push(l);
     }
+    assigned.sort((a, b) => String(b.assignedDate).localeCompare(String(a.assignedDate)));
+    return { byId, unassigned, last: assigned.slice(0, 12) };
+  }, [leads]);
+
+  const agents = useMemo(() => people.map((s: any) => {
+    const f = fairness.byId.get(String(s.id)) || { open: 0, total: 0, untouched: 0, today: 0 };
+    return {
+      id: String(s.id),
+      name: s.name,
+      status: s.leave ? 'Away' : (s.active ? 'Online' : 'Offline'),
+      // No invented defaults: personal weight/cap only when set; the cap otherwise comes from the queue settings
+      weight: typeof s.weight === 'number' && s.weight > 0 ? s.weight : null,
+      cap: Number(s.cap) > 0 ? Number(s.cap) : (Number(settings?.maxLeadsPerSalesperson) > 0 ? Number(settings.maxLeadsPerSalesperson) : null),
+      activeLeads: f.open, totalLeads: f.total, untouched: f.untouched, assignedToday: f.today,
+      projects: Array.isArray(s.projects) ? s.projects : [],
+    };
+  }), [people, fairness, settings]);
+  const spread = agents.length > 1 ? Math.max(...agents.map((a) => a.activeLeads)) - Math.min(...agents.map((a) => a.activeLeads)) : null;
+
+  // Only the methods the server really applies are offered. An assigned lead keeps the status New: the team's vocabulary has no "Assigned".
+  const strategies: { value: AssignmentMethod; title: string; description: string }[] = [
+    { value: 'Round Robin', title: 'Round Robin', description: 'Hands each new lead to the next eligible person in name order, so everybody gets the same number.' },
+    { value: 'Least Active Leads', title: 'Least Active Leads', description: 'Gives the lead to the eligible person with the fewest open leads (ties: fewest leads overall).' },
+    { value: 'Least Total Leads', title: 'Least Total Leads', description: 'Gives the lead to the eligible person who has received the fewest leads in total.' },
+    { value: 'Random', title: 'Random', description: 'Picks one eligible person at random.' },
+    { value: 'Manual Assignment Only', title: 'Manual only', description: 'New leads stay unassigned (status New) until Sales Operation distributes them.' },
   ];
+  const unsupported = !strategies.some((x) => x.value === activeStrategy);
 
   const handleSaveStrategy = () => {
     const currentSettings = crmService.getQueueSettings();
@@ -115,7 +114,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
             </span>
           </h3>
           <p className="text-xs text-brand-gray/80 mt-1">
-            Configure how incoming digital leads from Web, Facebook, CRM parsed mailboxes are instantly routed to authorized agents.
+            Choose how new leads from the website, ads and the mailbox are shared among the salespeople. Only Sales Operation changes it; the server applies it and keeps the audit trail.
           </p>
         </div>
       </div>
@@ -126,6 +125,12 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-5 space-y-4">
             <h4 className="font-bold text-brand-black text-sm uppercase tracking-wide">Active Routing Strategy</h4>
+            {unsupported && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[11px] font-semibold flex items-center gap-2">
+                <AlertCircle size={14} />
+                <span>The saved method "{activeStrategy}" is not modelled by the server: it routes like Least Active Leads. Choose one of the methods below to make it explicit.</span>
+              </div>
+            )}
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
               {strategies.map((strat) => {
@@ -190,7 +195,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
                 const percentage = agent.cap ? Math.min(100, Math.round((agent.activeLeads / agent.cap) * 100)) : 0;
                 const isOnline = agent.status === 'Online';
                 return (
-                  <div key={agent.name} className="p-3 bg-brand-gray/5 border border-brand-gray/15 rounded-xl space-y-2">
+                  <div key={agent.id} className="p-3 bg-brand-gray/5 border border-brand-gray/15 rounded-xl space-y-2">
                     <div className="flex justify-between items-center font-bold">
                       <span className="text-brand-black font-extrabold flex items-center gap-1.5">
                         <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-brand-gray'}`} />
@@ -210,7 +215,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
 
                     <div className="flex justify-between items-center text-[9px] text-brand-gray font-bold uppercase tracking-wider">
                       <span>Projects: {agent.projects.length ? agent.projects.join(', ') : 'all'}</span>
-                      <span>Weight: {agent.weight !== null ? `${agent.weight}x` : '—'}</span>
+                      <span>{agent.untouched} not yet contacted</span>
                     </div>
                   </div>
                 );
@@ -219,10 +224,54 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
           </div>
 
           <div className="p-3.5 bg-brand-gray/5 rounded-xl border border-brand-gray/15 text-[10px] text-brand-gray font-semibold leading-relaxed mt-4">
-            <p><strong>Note on Weighting:</strong> High multipliers skew automated round robin distributions towards high-converting senior executives.</p>
+            <p>Open leads = not Won, Lost, Not Interested, Low Budget or Wrong Number. A routed lead keeps the status New with an owner until the salesperson works it.</p>
           </div>
         </div>
 
+      </div>
+
+      {/* Fairness: read-only, from the leads themselves */}
+      <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-5 space-y-4 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h4 className="font-bold text-brand-black text-sm uppercase tracking-wide flex items-center gap-1.5">
+            Fairness <InfoTip wide text="Counts come straight from the lead list, nothing is estimated. Open = not Won, Lost, Not Interested, Low Budget or Wrong Number. 'Not yet contacted' = open leads with no first contact, no contact date and no status other than New. 'Assigned today' counts leads whose assignment date is today. The spread is the difference between the highest and lowest open count." />
+          </h4>
+          <div className="flex gap-4 text-[10px] font-bold text-brand-gray">
+            <span>Unassigned open leads: <span className={`font-mono ${fairness.unassigned ? 'text-amber-600' : 'text-brand-black'}`}>{fairness.unassigned}</span></span>
+            <span>Spread between people: <span className="font-mono text-brand-black">{spread == null ? '—' : spread}</span></span>
+            <span>Cap per person: <span className="font-mono text-brand-black">{Number(settings?.maxLeadsPerSalesperson) > 0 ? settings.maxLeadsPerSalesperson : '—'}</span></span>
+            <span>Daily limit: <span className="font-mono text-brand-black">{Number(settings?.maxDailyAssignment) > 0 ? settings.maxDailyAssignment : '—'}</span></span>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead><tr className="text-[10px] uppercase text-brand-gray font-bold border-b border-brand-gray/15">
+                <th className="py-2 pr-2">Salesperson</th><th className="py-2 px-2 text-right">Open</th><th className="py-2 px-2 text-right">Not yet contacted</th><th className="py-2 px-2 text-right">Assigned today</th><th className="py-2 pl-2 text-right">Total</th>
+              </tr></thead>
+              <tbody className="divide-y divide-brand-gray/10 font-semibold">
+                {agents.length === 0 && <tr><td colSpan={5} className="py-4 text-center text-brand-gray">No salespeople configured.</td></tr>}
+                {[...agents].sort((a, b) => b.activeLeads - a.activeLeads).map((a) => (
+                  <tr key={a.id}><td className="py-2 pr-2 font-bold text-brand-black">{a.name}{a.status !== 'Online' && <span className="ml-1 text-[9px] text-brand-gray font-bold">({a.status})</span>}</td>
+                    <td className="py-2 px-2 text-right font-mono">{a.activeLeads}</td><td className="py-2 px-2 text-right font-mono">{a.untouched}</td>
+                    <td className="py-2 px-2 text-right font-mono">{a.assignedToday}</td><td className="py-2 pl-2 text-right font-mono text-brand-gray">{a.totalLeads}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase text-brand-gray font-bold mb-2">Last assignments</p>
+            <div className="space-y-1.5">
+              {fairness.last.length === 0 && <p className="text-brand-gray py-4 text-center">No assignment dates recorded yet.</p>}
+              {fairness.last.map((l) => (
+                <div key={l.id} className="flex items-center justify-between gap-2 bg-brand-gray/5 rounded-lg px-3 py-1.5">
+                  <span className="min-w-0 truncate"><span className="font-mono font-bold text-brand-red">{l.id}</span> <span className="font-semibold text-brand-black">{l.customerName}</span></span>
+                  <span className="text-[10px] text-brand-gray font-semibold shrink-0">to <span className="font-bold text-brand-black">{l.assignedSalespersonName || '—'}</span> · {fmtDay(dayOf(l.assignedDate))} · {l.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
     </div>

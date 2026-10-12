@@ -1,8 +1,18 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Lead, Contact, Company, LeadStatus, LeadPriority, LostReason, CommentNote, Attachment, TimelineEvent, PlotRecord } from './types';
 import { CrmPlotRecommendations } from './CrmPlotRecommendations';
 import { ColumnSelector } from './ColumnSelector';
 import { crmService, normalizePhone } from './crmService';
+import {
+  INDUSTRIES, LOST_CATEGORIES, LOST_REASONS_TEAM, PRIORITIES, SOURCES, STATUS_GROUPS, LEGACY_STATUSES, isOpenStatus, leadScore, normSource, phoneIntl, statusStage,
+} from './leadConfig';
+import { KanbanKey, LeadAuth, addDaysISO, withSideEffects, kanbanBucket, neglectInfo, prioKey, priorityClass, statusClass, todayISO } from './leadRules';
+import { fmtSize, formatLeadDateTime, getSlaStatus, isSlaAtRisk, localISO } from './leadView';
+import { KanbanCard, LeadRow, PAGE_SIZES, PageSize, PagerBar } from './LeadListParts';
+import { LeadEditor, NATIONALITIES } from './LeadEditor';
+import { LeadAuditHistory } from './LeadAuditHistory';
+import { LeadScoreChip, sourceWinRates } from './LeadScoreChip';
+import { WA_LANGS, WaLang, WA_TEMPLATES, getWaLang, setWaLang, suggestTemplate, waCompose, waFill } from './waTemplates';
 import DOMPurify from 'dompurify';
 import { useAuth } from '../../services/AuthContext';
 import { parseCSV } from '../../lib/plots';
@@ -52,7 +62,6 @@ import { motion, AnimatePresence } from 'motion/react';
 
 // Local-calendar helpers (toISOString() is UTC and shifts the day for Egypt, UTC+2/+3)
 const pad2 = (n: number) => String(n).padStart(2, '0');
-const localISO = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 // 'YYYY-MM-DD' stays as is; a full timestamp becomes its local calendar day ('' when invalid/missing)
 const dayOf = (v?: string) => {
   if (!v) return '';
@@ -60,9 +69,6 @@ const dayOf = (v?: string) => {
   const d = new Date(v);
   return isNaN(d.getTime()) ? '' : localISO(d);
 };
-const fmtSize = (v: string | number | undefined) => (Number(v) > 0 ? `${Number(v).toLocaleString('en-US')} sqm` : '—');
-const PRIORITY_RANK: Record<string, number> = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
-const TERMINAL_STATUSES = ['Won', 'Lost', 'Duplicate', 'Invalid', 'Closed', 'Not Interested'];
 const EMAIL_RE = /^[^\s@,;<>()"?&=]+@[^\s@,;<>()"?&=]+\.[^\s@,;<>()"?&=]+$/;
 // Only data:/blob:/https: URLs may be used as a link target (blocks javascript: etc. coming from stored data)
 const safeUrl = (u?: string) => (u && /^(data:|blob:|https:)/i.test(u.trim()) ? u : undefined);
@@ -81,120 +87,24 @@ const sanitizeEmailHtml = (html: string): string =>
   });
 // Digits for a wa.me link: 00-prefix dropped, Egyptian local 0xxxxxxxxxx -> 20xxxxxxxxxx; '' when not plausible
 const waNumber = (phone?: string) => {
+  const intl = phoneIntl(phone).replace(/\D/g, '');
+  if (intl.length >= 8) return intl;
   let n = String(phone || '').replace(/[^\d]/g, '');
   if (n.startsWith('00')) n = n.substring(2);
   else if (n.startsWith('0')) n = '20' + n.substring(1);
   return n.length >= 8 && n.length <= 15 ? n : '';
 };
-// SLA risk = still active and inside the last 25% of its window (registration/assignment -> deadline)
-const isSlaAtRisk = (l: Lead, sla: { status: string }) => {
-  if (sla.status !== 'active' || !l.slaDeadline) return false;
-  const start = new Date(l.assignedDate || l.date).getTime();
-  const end = new Date(l.slaDeadline).getTime();
-  if (isNaN(start) || isNaN(end) || end <= start) return false;
-  return (end - Date.now()) / (end - start) <= 0.25;
-};
 
-// Helper to format date and time beautifully
-function formatLeadDateTime(dateStr: string): string {
-  if (!dateStr) return 'N/A';
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const min = String(d.getMinutes()).padStart(2, '0');
-    
-    // Check if the original string was just a YYYY-MM-DD string without time
-    if (dateStr.length <= 10) {
-      return `${yyyy}-${mm}-${dd}`;
-    }
-    return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
-  } catch (e) {
-    return dateStr;
-  }
-}
+const PRIORITY_ORDER: Record<string, number> = { VIP: 0, Urgent: 0, High: 1, Medium: 2, Normal: 2, Low: 3 };
+const STATUS_ORDER = new Map<string, number>([...STATUS_GROUPS.flatMap((g) => g.statuses), ...LEGACY_STATUSES].map((st, i) => [st, i] as [string, number]));
 
-// Helper to calculate SLA status
-interface SlaStatus {
-  status: 'none' | 'active' | 'violated' | 'met' | 'missed';
-  text: string;
-  isViolated: boolean;
-  remainingText: string;
-}
-
-function getSlaStatus(lead: Lead): SlaStatus {
-  if (!lead.slaDeadline) {
-    return { status: 'none', text: 'No SLA Set', isViolated: false, remainingText: 'N/A' };
-  }
-  
-  const now = new Date();
-  const deadline = new Date(lead.slaDeadline);
-  if (isNaN(deadline.getTime())) {
-    return { status: 'none', text: 'No SLA Set', isViolated: false, remainingText: 'N/A' };
-  }
-  const diffMs = deadline.getTime() - now.getTime();
-  const isClosed = TERMINAL_STATUSES.includes(lead.status);
-  
-  if (isClosed) {
-    const lastUpdatedDate = new Date(lead.lastUpdated || lead.date);
-    const met = lastUpdatedDate.getTime() <= deadline.getTime();
-    if (met) {
-      return { 
-        status: 'met', 
-        text: 'SLA Met', 
-        isViolated: false, 
-        remainingText: 'SLA Met' 
-      };
-    } else {
-      return { 
-        status: 'missed', 
-        text: 'SLA Missed', 
-        isViolated: true, 
-        remainingText: 'SLA Missed' 
-      };
-    }
-  }
-
-  if (diffMs < 0) {
-    const absDiff = Math.abs(diffMs);
-    const hours = Math.floor(absDiff / (3600 * 1000));
-    const mins = Math.floor((absDiff % (3600 * 1000)) / (60 * 1000));
-    let overdueText = '';
-    if (hours > 24) {
-      overdueText = `${Math.floor(hours / 24)}d overdue`;
-    } else if (hours > 0) {
-      overdueText = `${hours}h ${mins}m overdue`;
-    } else {
-      overdueText = `${mins}m overdue`;
-    }
-    return { 
-      status: 'violated', 
-      text: 'SLA Violated', 
-      isViolated: true, 
-      remainingText: overdueText 
-    };
-  } else {
-    const hours = Math.floor(diffMs / (3600 * 1000));
-    const mins = Math.floor((diffMs % (3600 * 1000)) / (60 * 1000));
-    let remainingText = '';
-    if (hours > 24) {
-      remainingText = `${Math.floor(hours / 24)}d ${hours % 24}h remaining`;
-    } else if (hours > 0) {
-      remainingText = `${hours}h ${mins}m remaining`;
-    } else {
-      remainingText = `${mins}m remaining`;
-    }
-    return { 
-      status: 'active', 
-      text: 'SLA Active', 
-      isViolated: false, 
-      remainingText: remainingText 
-    };
-  }
-}
+const KANBAN_PAGE = 30;
+const KANBAN_COLS: { key: KanbanKey; label: string; title: string; badge: string; tone: 'amber' | 'indigo' | 'blue' | 'closed' }[] = [
+  { key: 'new', label: '1. New / Ops Review', title: 'text-amber-700', badge: 'bg-amber-100 text-amber-800', tone: 'amber' },
+  { key: 'working', label: '2. Contact attempt / Follow-up', title: 'text-purple-700', badge: 'bg-purple-100 text-purple-800', tone: 'indigo' },
+  { key: 'pipeline', label: '3. Sales pipeline', title: 'text-blue-700', badge: 'bg-blue-100 text-blue-800', tone: 'blue' },
+  { key: 'closed', label: '4. Closed (won / lost / dead)', title: 'text-emerald-700', badge: 'bg-emerald-100 text-emerald-800', tone: 'closed' },
+];
 
 interface CrmLeadsProps {
   leads: Lead[];
@@ -204,10 +114,29 @@ interface CrmLeadsProps {
 }
 
 export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, currentRole, setActiveSubTab }) => {
-  const { user } = useAuth();
+  const { user, permissions } = useAuth();
   const isAdmin = (currentRole?.toLowerCase() || '').includes('admin') || (user?.role?.toLowerCase() || '').includes('admin');
+  const isOps = isAdmin || (user?.role || currentRole) === 'Sales Operation' || !!permissions?.canViewSalesRules;
   const [viewMode, setViewMode] = useState<'list' | 'kanban' | 'calendar'>('list');
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');      // committed (debounced) search text
+  const [searchInput, setSearchInput] = useState('');     // what is typed
+  useEffect(() => { const t = setTimeout(() => setSearchTerm(searchInput), 250); return () => clearTimeout(t); }, [searchInput]);
+  const clearSearch = () => { setSearchInput(''); setSearchTerm(''); };
+  // cheap delta refresh while this screen is open (every ~90 s while the tab is visible, and on focus)
+  useEffect(() => crmService.startAutoRefresh(), []);
+  // minute clock: SLA texts are time based, memoised rows get a new `tick` once a minute
+  const [tick, setTick] = useState(0);
+  useEffect(() => { const t = setInterval(() => { if (document.visibilityState === 'visible') setTick((x) => x + 1); }, 60_000); return () => clearInterval(t); }, []);
+  // paging: 25 / 50 / 100 / All, remembered
+  const [pageSize, setPageSizeState] = useState<PageSize>(() => {
+    try { const raw = localStorage.getItem('sid_leads_page_size'); const v = Number(raw); if (raw !== null && (PAGE_SIZES as readonly number[]).includes(v)) return v as PageSize; } catch { /* default */ }
+    return 25;
+  });
+  const [page, setPage] = useState(0);
+  const setPageSize = (n: PageSize) => { setPageSizeState(n); setPage(0); try { localStorage.setItem('sid_leads_page_size', String(n)); } catch { /* ignore */ } };
+  const [kanbanCap, setKanbanCap] = useState<Record<string, number>>({});
+  const [calDay, setCalDay] = useState<string | null>(null);
+  const [calCap, setCalCap] = useState(50);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   
   // Advanced filters
@@ -276,7 +205,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
         if (foundLead) {
           setSelectedLead(foundLead);
           setFilterStatus('All');
-          setSearchTerm('');
+          clearSearch();
           setFilterProject('All');
           setFilterPriority('All');
           setFilterSource('All');
@@ -294,7 +223,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
         if (foundLead) {
           setSelectedLead(foundLead);
           setFilterStatus('All');
-          setSearchTerm('');
+          clearSearch();
           setFilterProject('All');
           setFilterPriority('All');
           setFilterSource('All');
@@ -317,7 +246,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   const [savedView, setSavedView] = useState<string>('All');
 
   // Column management
-  const [visibleColumns, setVisibleColumns] = useState<string[]>(['id', 'date', 'customer', 'project', 'size', 'slaStatus', 'priority', 'status', 'assigned']);
+  const [visibleColumns, setVisibleColumns] = useState<string[]>(['id', 'date', 'customer', 'project', 'size', 'slaStatus', 'priority', 'score', 'status', 'assigned']);
   
   const columns = {
     id: visibleColumns.includes('id'),
@@ -327,6 +256,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     size: visibleColumns.includes('size'),
     slaStatus: visibleColumns.includes('slaStatus'),
     priority: visibleColumns.includes('priority'),
+    score: visibleColumns.includes('score'),
     status: visibleColumns.includes('status'),
     assigned: visibleColumns.includes('assigned'),
   };
@@ -339,6 +269,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     { key: 'size', label: 'Size' },
     { key: 'slaStatus', label: 'SLA Status' },
     { key: 'priority', label: 'Priority' },
+    { key: 'score', label: 'Lead score' },
     { key: 'status', label: 'Status' },
     { key: 'assigned', label: 'Assigned' },
   ];
@@ -376,16 +307,20 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     companyName: '',
     project: '',
     requiredSize: '' as number | '',
-    source: 'Manual Entry',
-    priority: 'Normal' as LeadPriority,
+    source: '',
+    priority: 'Medium' as LeadPriority,
     description: '',
+    phone2: '',
+    industry: '',
+    nationality: '',
   };
   const [newLeadForm, setNewLeadForm] = useState(EMPTY_LEAD_FORM);
 
   const [assigneeId, setAssigneeId] = useState('');
   const [primaryLeadMergeId, setPrimaryLeadMergeId] = useState('');
   const [duplicateLeadMergeId, setDuplicateLeadMergeId] = useState('');
-  const [lostReason, setLostReason] = useState<LostReason>('Not Interested');
+  const [lostCategory, setLostCategory] = useState('');
+  const [lostReasonTeam, setLostReasonTeam] = useState('');
   const [lostComment, setLostComment] = useState('');
 
   // Interaction logs (calls, visits, reminders, email, whatsapp)
@@ -419,27 +354,23 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   // CRM calendar month (current month by default)
   const [calMonth, setCalMonth] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; });
 
-  // Retrieve salespeople for select options
+  // Retrieve salespeople for select options. One pass over the leads (not one scan per person).
   const salespeople = useMemo(() => {
     const allReps = crmService.getSalesPeople();
-    
-    // Dynamically calculate the activeLeads and totalLeads based on the CURRENT list of leads
+    const byId = new Map<string, { active: number; total: number }>(), byName = new Map<string, { active: number; total: number }>();
+    const bump = (m: Map<string, { active: number; total: number }>, k: string, open: boolean) => {
+      let c = m.get(k); if (!c) { c = { active: 0, total: 0 }; m.set(k, c); }
+      c.total++; if (open) c.active++;
+    };
+    for (const l of leads) {
+      const open = isOpenStatus(l.status);
+      if (l.assignedSalespersonId) bump(byId, String(l.assignedSalespersonId), open);
+      else if (l.assignedSalespersonName) bump(byName, l.assignedSalespersonName, open);
+    }
     const mappedReps = allReps.map((s: any) => {
-      // An active/live lead is any lead that is assigned to this salesperson and is not in a closed/inactive status
-      const activeLeadsCount = leads.filter(l => 
-        (String(l.assignedSalespersonId) === String(s.id) || (l.assignedSalespersonName && l.assignedSalespersonName === s.name)) &&
-        !['Won', 'Lost', 'Duplicate', 'Invalid', 'Closed', 'Not Interested'].includes(l.status)
-      ).length;
-
-      const totalLeadsCount = leads.filter(l => 
-        String(l.assignedSalespersonId) === String(s.id) || (l.assignedSalespersonName && l.assignedSalespersonName === s.name)
-      ).length;
-
-      return {
-        ...s,
-        activeLeads: activeLeadsCount,
-        totalLeads: totalLeadsCount
-      };
+      const a = byId.get(String(s.id)), b = !a && s.name ? byName.get(s.name) : undefined;
+      const c = a || b;
+      return { ...s, activeLeads: c?.active || 0, totalLeads: c?.total || 0 };
     });
 
     if (user?.role === 'Sales Team Leader') {
@@ -450,6 +381,9 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     }
     return mappedReps;
   }, [leads, user]);
+
+  // Win rate per source (for the lead score), computed once per list
+  const winRates = useMemo(() => sourceWinRates(leads), [leads]);
 
   // Handle auto-selection of a lead from other tabs
   useEffect(() => {
@@ -480,7 +414,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     setFilterPriority('All');
     setFilterSource('All');
     setFilterSalesperson('All');
-    setSearchTerm('');
+    clearSearch();
     setSavedView('All');
   };
 
@@ -507,90 +441,86 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     setSavedView(view);
   };
 
+  // Search text of a lead is built once per lead object (rows keep their identity between refreshes)
+  const searchIndex = useMemo(() => new WeakMap<Lead, { t: string; d: string }>(), []);
+  const searchOf = (l: Lead) => {
+    let e = searchIndex.get(l);
+    if (!e) {
+      e = {
+        t: `${l.id} ${l.customerName || ''} ${l.phoneNumber || ''} ${l.phone2 || ''} ${l.email || ''} ${l.companyName || ''} ${l.project || ''} ${l.source || ''} ${l.assignedSalespersonName || ''} ${l.description || ''} ${l.notes || ''}`.toLowerCase(),
+        d: `${normalizePhone(l.phoneNumber || '')} ${normalizePhone(l.phone2 || '')} ${phoneIntl(l.phoneNumber).replace(/\D/g, '')}`,
+      };
+      searchIndex.set(l, e);
+    }
+    return e;
+  };
+
   // Process and Filter Leads
   const filteredLeads = useMemo(() => {
-    return leads.filter(l => {
-      // Role-based visibility
+    // visibility by role (the server already limits what is sent; this keeps the screen consistent): one team set, no per-row scans
+    const myId = user ? String(user.id) : '';
+    const teamIds = new Set<string>();
+    if (user?.role === 'Sales Team Leader') for (const s of salespeople as any[]) if (s.teamLeaderId === myId) teamIds.add(String(s.id));
+    const q = searchTerm.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, '');
+    const qPhone = qDigits.length >= 5 ? normalizePhone(qDigits) : '';
+    const viewSla = savedView === 'SLA Violated' || savedView === 'SLA Within Limit' || savedView === 'SLA At Risk';
+
+    const out = leads.filter(l => {
       if (user) {
         if (user.role === 'Sales Rep') {
-          if (l.assignedSalespersonId !== String(user.id)) return false;
+          if (l.assignedSalespersonId !== myId) return false;
         } else if (user.role === 'Sales Team Leader') {
-          const isAssignedToMe = l.assignedSalespersonId === String(user.id);
-          const assignedRep = salespeople.find((s: any) => s.id === l.assignedSalespersonId);
-          const isMyTeam = assignedRep && assignedRep.teamLeaderId === String(user.id);
-          
-          // Also show unassigned leads? Team Leaders probably should see unassigned leads to claim or assign them.
-          // Let's allow unassigned leads for Team Leaders.
-          if (!isAssignedToMe && !isMyTeam && l.assignedSalespersonId) return false;
+          // unassigned leads stay visible so a team leader can claim or assign them
+          if (l.assignedSalespersonId && l.assignedSalespersonId !== myId && !teamIds.has(String(l.assignedSalespersonId))) return false;
         }
       }
-
-      // Global Search
-      const text = `${l.id} ${l.customerName || ''} ${l.phoneNumber || ''} ${l.email || ''} ${l.companyName || ''} ${l.project || ''} ${l.source || ''} ${l.assignedSalespersonName || ''} ${l.description || ''}`.toLowerCase();
-      const q = searchTerm.trim().toLowerCase();
-      const qDigits = q.replace(/\D/g, '');
-      // phone search also works across formats (+20 / 0020 / 01x)
-      const matchesSearch = !q || text.includes(q) || (qDigits.length >= 5 && normalizePhone(l.phoneNumber || '').includes(normalizePhone(qDigits)));
-
-      // Status filters
-      let matchesStatus = true;
-      if (filterStatus === 'OpenLeads') {
-        matchesStatus = !TERMINAL_STATUSES.includes(l.status);
-      } else if (filterStatus !== 'All') {
-        matchesStatus = l.status === filterStatus;
+      if (filterStatus === 'OpenLeads') { if (!isOpenStatus(l.status)) return false; }
+      else if (filterStatus !== 'All' && l.status !== filterStatus) return false;
+      if (filterProject !== 'All' && l.project !== filterProject) return false;
+      if (filterPriority !== 'All' && prioKey(l.priority) !== filterPriority) return false;
+      if (filterSource !== 'All' && l.source !== filterSource) return false;
+      if (filterSalesperson === 'Unassigned') { if (l.assignedSalespersonId) return false; }
+      else if (filterSalesperson !== 'All' && l.assignedSalespersonName !== filterSalesperson) return false;
+      if (q) {
+        const e = searchOf(l);
+        // phone search also works across formats (+20 / 0020 / 01x)
+        if (!e.t.includes(q) && !(qPhone && (e.d.includes(qPhone) || e.d.includes(qDigits)))) return false;
       }
-
-      // Project filter
-      const matchesProject = filterProject === 'All' || l.project === filterProject;
-
-      // Priority filter
-      const matchesPriority = filterPriority === 'All' || l.priority === filterPriority;
-
-      // Source filter
-      const matchesSource = filterSource === 'All' || l.source === filterSource;
-
-      // Salesperson filter
-      let matchesSalesperson = true;
-      if (filterSalesperson === 'Unassigned') {
-        matchesSalesperson = !l.assignedSalespersonId;
-      } else if (filterSalesperson !== 'All') {
-        matchesSalesperson = l.assignedSalespersonName === filterSalesperson;
+      if (viewSla) {
+        const sla = getSlaStatus(l);
+        if (savedView === 'SLA Violated' && !sla.isViolated) return false;
+        if (savedView === 'SLA Within Limit' && (sla.isViolated || sla.status === 'none')) return false;
+        if (savedView === 'SLA At Risk' && !isSlaAtRisk(l, sla)) return false;
       }
-
-      // Saved view custom conditions
-      let matchesSavedView = true;
-      if (savedView === 'SLA Violated') {
-        const slaInfo = getSlaStatus(l);
-        matchesSavedView = slaInfo.isViolated;
-      } else if (savedView === 'SLA Within Limit') {
-        const slaInfo = getSlaStatus(l);
-        matchesSavedView = !slaInfo.isViolated && slaInfo.status !== 'none';
-      } else if (savedView === 'SLA At Risk') {
-        matchesSavedView = isSlaAtRisk(l, getSlaStatus(l));
-      }
-
-      return matchesSearch && matchesStatus && matchesProject && matchesPriority && matchesSource && matchesSalesperson && matchesSavedView;
-    }).sort((a, b) => {
-      // Comparable value per field: priority by rank, size numerically, text case-insensitively; missing = always last
-      const key = (l: Lead): string | number | null => {
-        const v: any = l[sortField];
-        if (sortField === 'priority') return PRIORITY_RANK[l.priority] ?? 99;
-        if (sortField === 'requiredSize') { const n = Number(v); return isNaN(n) || v === '' ? null : n; }
-        if (v === undefined || v === null || v === '') return null;
-        if (typeof v === 'string') return v.toLowerCase();
-        if (typeof v === 'number') return v;
-        return null;
-      };
-      const valA = key(a);
-      const valB = key(b);
-      if (valA === null && valB === null) return 0;
-      if (valA === null) return 1;
-      if (valB === null) return -1;
-      if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
-      if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
+      return true;
     });
+
+    // comparable value per lead, computed once (not on every comparison); missing values are always last
+    const keyOf = (l: Lead): string | number | null => {
+      const v: any = l[sortField];
+      if (sortField === 'priority') return PRIORITY_ORDER[l.priority as string] ?? 99;
+      if (sortField === 'status') { const i = STATUS_ORDER.get(l.status); return i === undefined ? 999 : i; }
+      if (sortField === 'requiredSize') { const n = Number(v); return isNaN(n) || v === '' ? null : n; }
+      if (v === undefined || v === null || v === '') return null;
+      if (typeof v === 'string') return v.toLowerCase();
+      if (typeof v === 'number') return v;
+      return null;
+    };
+    const keyed = out.map((l) => ({ l, k: keyOf(l) }));
+    const dir = sortDirection === 'asc' ? 1 : -1;
+    keyed.sort((a, b) => {
+      if (a.k === null && b.k === null) return 0;
+      if (a.k === null) return 1;
+      if (b.k === null) return -1;
+      return a.k < b.k ? -dir : a.k > b.k ? dir : 0;
+    });
+    return keyed.map((x) => x.l);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, salespeople, leads, searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, sortField, sortDirection]);
+
+  // back to the first page whenever the result set changes shape
+  useEffect(() => { setPage(0); setKanbanCap({}); setCalDay(null); }, [searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, sortField, sortDirection]);
 
   // Project List
   const projects = useMemo(() => {
@@ -678,30 +608,68 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     }
   };
 
-  // Bulk Actions
-  const handleSelectLead = (id: string) => {
-    if (selectedLeadIds.includes(id)) {
-      setSelectedLeadIds(selectedLeadIds.filter(item => item !== id));
-    } else {
-      setSelectedLeadIds([...selectedLeadIds, id]);
-    }
-  };
+  // Bulk Actions. Selection is a Set for lookups (a row test must not scan the whole selection).
+  const selectedSet = useMemo(() => new Set(selectedLeadIds), [selectedLeadIds]);
+  const handleSelectLead = useCallback((id: string) => {
+    setSelectedLeadIds(prev => (prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]));
+  }, []);
 
+  // current page of the filtered list (All = everything)
+  const pageCount = pageSize === 0 ? 1 : Math.max(1, Math.ceil(filteredLeads.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageLeads = useMemo(
+    () => (pageSize === 0 ? filteredLeads : filteredLeads.slice(safePage * pageSize, (safePage + 1) * pageSize)),
+    [filteredLeads, pageSize, safePage],
+  );
+  const pageAllSelected = pageLeads.length > 0 && pageLeads.every(l => selectedSet.has(l.id));
+  const allFilteredSelected = filteredLeads.length > 0 && filteredLeads.length === selectedLeadIds.length && filteredLeads.every(l => selectedSet.has(l.id));
+
+  // header checkbox = this page; "Select all N filtered" is an explicit second step
   const handleSelectAll = () => {
-    if (selectedLeadIds.length === filteredLeads.length) {
-      setSelectedLeadIds([]);
+    if (pageAllSelected) {
+      const drop = new Set(pageLeads.map(l => l.id));
+      setSelectedLeadIds(prev => prev.filter(id => !drop.has(id)));
     } else {
-      setSelectedLeadIds(filteredLeads.map(l => l.id));
+      setSelectedLeadIds(prev => Array.from(new Set([...prev, ...pageLeads.map(l => l.id)])));
     }
   };
+  const selectAllFiltered = () => setSelectedLeadIds(filteredLeads.map(l => l.id));
 
   const confirmBulkDelete = () => {
     // Re-read the stored leads right before writing so a stale prop copy cannot overwrite newer edits
-    const remaining = crmService.getLeads().filter(l => !selectedLeadIds.includes(l.id));
+    const remaining = crmService.getLeads().filter(l => !selectedSet.has(l.id));
     crmService.saveLeads(remaining);
     setSelectedLeadIds([]);
     setBulkAction('');
     setDeleteConfirmBulk(false);
+    onLeadsUpdated();
+  };
+
+  // Bulk Won: the server needs a deal value for every Won lead, so each one is asked for
+  const [bulkWon, setBulkWon] = useState<{ id: string; name: string; project: string; value: string }[] | null>(null);
+  const BULK_WON_MAX = 100;
+  const confirmBulkWon = () => {
+    if (!bulkWon || bulkWon.some(r => !(Number(r.value) > 0))) return;
+    const values = new Map(bulkWon.map(r => [r.id, Number(r.value)]));
+    const now = new Date().toISOString();
+    const updated = crmService.getLeads().map(l => {
+      const v = values.get(l.id);
+      if (v === undefined) return l;
+      const next = withSideEffects(l, { ...l, status: 'Won' as LeadStatus, dealValue: v, lastUpdated: now });
+      next.timeline = [...(l.timeline || []), {
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: now,
+        type: 'Status Change' as const,
+        user: user?.name || 'Bulk Operation',
+        title: 'Deal Won',
+        description: `Marked as Won via bulk action. Deal value EGP ${v.toLocaleString('en-US')} (cash pending confirmation by accounts receivable).`,
+      }];
+      return next;
+    });
+    crmService.saveLeads(updated);
+    setBulkWon(null);
+    setSelectedLeadIds([]);
+    setBulkAction('');
     onLeadsUpdated();
   };
 
@@ -718,55 +686,48 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
       setShowAssignModal(true);
     } else if (bulkAction === 'won') {
       if (currentRole === 'Read Only') return;
-      const toWin = crmService.getLeads().filter(l => selectedLeadIds.includes(l.id) && !['Won', 'Duplicate', 'Invalid'].includes(l.status));
+      const toWin = crmService.getLeads().filter(l => selectedSet.has(l.id) && !['Won', 'Duplicate', 'Invalid'].includes(l.status));
       if (toWin.length === 0) { alert('None of the selected leads can be marked as Won.'); return; }
-      if (!window.confirm(`Mark ${toWin.length} lead(s) as Won?`)) return;
-      const winIds = new Set(toWin.map(l => l.id));
-      const updated = crmService.getLeads().map(l => {
-        if (winIds.has(l.id)) {
-          return {
-            ...l,
-            status: 'Won' as LeadStatus,
-            lastUpdated: new Date().toISOString(),
-            timeline: [...(l.timeline || []), {
-              id: Math.random().toString(36).substr(2, 9),
-              timestamp: new Date().toISOString(),
-              type: 'Status Change' as const,
-              user: user?.name || 'Bulk Operation',
-              title: 'Won Deal',
-              description: 'Marked as Won Deal via bulk operator action.'
-            }]
-          };
-        }
-        return l;
-      });
-      crmService.saveLeads(updated);
-      setSelectedLeadIds([]);
-      setBulkAction('');
-      onLeadsUpdated();
+      if (toWin.length > BULK_WON_MAX) { alert(`Every Won lead needs its own deal value, so Bulk Won is limited to ${BULK_WON_MAX} leads at a time (you selected ${toWin.length}).`); return; }
+      setBulkWon(toWin.map(l => ({ id: l.id, name: l.customerName, project: l.project, value: l.dealValue ? String(l.dealValue) : '' })));
     }
   };
 
   // Create Lead
-  const handleCreateLead = (e: React.FormEvent) => {
+  const [createDup, setCreateDup] = useState<{ lead: Lead; why: string } | null>(null);
+  const handleCreateLead = (e: React.FormEvent, force = false) => {
     e.preventDefault();
     const name = newLeadForm.customerName.trim();
     const phone = normalizePhone(newLeadForm.phoneNumber || '');
     if (!name) { alert('Customer name is required.'); return; }
     if (phone.replace(/\D/g, '').length < 8) { alert('Enter a valid mobile number.'); return; }
     if (!newLeadForm.project) { alert('Choose the target project.'); return; }
-    // Duplicate check against the freshest stored leads (same phone, not already marked Duplicate)
-    const dup = crmService.getLeads().find(l => l.status !== 'Duplicate' && l.phoneNumber && normalizePhone(l.phoneNumber) === phone);
-    if (dup && !window.confirm(`A lead with this phone number already exists (${dup.id} - ${dup.customerName}). Create another lead anyway?`)) return;
+    if (!newLeadForm.source) { alert('Choose the lead source.'); return; }
+    if (newLeadForm.email.trim() && !EMAIL_RE.test(newLeadForm.email.trim())) { alert('The e-mail address is not valid.'); return; }
+    // same phone or same e-mail (generic e-mails ignored): show who owns it and offer to open that lead; never create silently
+    if (!force) {
+      const hit = crmService.findDuplicates({ phone: newLeadForm.phoneNumber, phone2: newLeadForm.phone2, email: newLeadForm.email })[0];
+      if (hit) {
+        const samePhone = [newLeadForm.phoneNumber, newLeadForm.phone2].some(p => p && phoneIntl(p) && (phoneIntl(p) === phoneIntl(hit.phoneNumber) || phoneIntl(p) === phoneIntl(hit.phone2)));
+        setCreateDup({ lead: hit, why: samePhone ? 'the same phone number' : 'the same e-mail address' });
+        return;
+      }
+    }
     try {
       const size = Number(newLeadForm.requiredSize);
+      const { phone2, industry, nationality, ...base } = newLeadForm;
       crmService.createLead({
-        ...newLeadForm,
+        ...base,
+        ...(phone2.trim() ? { phone2: phone2.trim() } : {}),
+        ...(industry ? { industry } : {}),
+        ...(nationality.trim() ? { nationality: nationality.trim() } : {}),
+        source: normSource(newLeadForm.source) || newLeadForm.source,
         customerName: name,
         // size is optional: when not stated it is stored as 'n/a' instead of an invented number
         requiredSize: size > 0 ? size : 'n/a'
       }, user?.name || 'Administrator');
       setShowCreateModal(false);
+      setCreateDup(null);
       setNewLeadForm(EMPTY_LEAD_FORM);
       onLeadsUpdated();
     } catch (e: any) {
@@ -781,6 +742,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
 
     const idsToAssign = selectedLeadIds.length > 0 ? selectedLeadIds : (selectedLead ? [selectedLead.id] : []);
     if (idsToAssign.length === 0) return;
+    const assignSet = new Set(idsToAssign);
 
     // Respect the queue settings: leave / inactive users and the per-person cap need an explicit OK
     const settings = crmService.getQueueSettings();
@@ -795,7 +757,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
 
     // Re-read the stored leads right before writing (no stale-array overwrite)
     const updatedLeads = crmService.getLeads().map(l => {
-      if (idsToAssign.includes(l.id)) {
+      if (assignSet.has(l.id)) {
         const timelineEvent: TimelineEvent = {
           id: Math.random().toString(36).substr(2, 9),
           timestamp: new Date().toISOString(),
@@ -809,7 +771,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
           assignedSalespersonId: selectedRep.id,
           assignedSalespersonName: selectedRep.name,
           assignedDate: new Date().toISOString(),
-          status: l.status === 'New' ? 'Assigned' as LeadStatus : l.status,
+          nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2),
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), timelineEvent]
         };
@@ -918,6 +880,10 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   // Close Lead as Lost
   const handleMarkAsLost = () => {
     if (!selectedLead) return;
+    if (!lostCategory || !lostReasonTeam) {
+      alert('Choose the lost category and the lost reason.');
+      return;
+    }
     if (!lostComment.trim()) {
       alert('A comment is mandatory when closing a lead as Lost.');
       return;
@@ -928,7 +894,8 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
         return {
           ...l,
           status: 'Lost' as LeadStatus,
-          lostReason,
+          lostCategory,
+          lostReason: lostReasonTeam,
           lostComment: lostComment.trim(),
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), {
@@ -937,7 +904,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
             type: 'Status Change' as const,
             user: user?.name || 'Agent',
             title: 'Lead Closed as Lost',
-            description: `Lost reason: ${lostReason}. Comments: ${lostComment.trim()}`
+            description: `Lost (${lostCategory}): ${lostReasonTeam}. Comments: ${lostComment.trim()}`
           }]
         };
       }
@@ -947,6 +914,8 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     crmService.saveLeads(updatedLeads);
     setShowLostModal(false);
     setLostComment('');
+    setLostCategory('');
+    setLostReasonTeam('');
     
     const refreshed = updatedLeads.find(l => l.id === selectedLead.id);
     setSelectedLead(refreshed || null);
@@ -1091,37 +1060,52 @@ ${user.name || ''}`);
     // Re-read the stored leads right before writing (no stale-array overwrite)
     const updatedLeads = crmService.getLeads().map(l => {
       if (l.id === selectedLead.id) {
-        // Transition status on contact; never reopen or move closed leads
-        let nextStatus = l.status;
-        const isClosed = TERMINAL_STATUSES.includes(l.status);
-        let lostPatch: { lostReason?: LostReason; lostComment?: string } = {};
-        if (!isClosed) {
+        // Transition status on contact; never reopen or move closed leads. Team statuses where one fits.
+        let nextStatus = l.status as LeadStatus;
+        const patch: Partial<Lead> = { lastContactDate: todayISO() };
+        const early = ['New', 'Assigned'].includes(l.status);
+        if (isOpenStatus(l.status)) {
           if (interactionType === 'call') {
             if (callOutcome === 'Asked to Call Back') {
-              nextStatus = 'Follow Up';
+              nextStatus = 'Client Will Call Back';
+              patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2);
             } else if (callOutcome === 'Not Interested') {
-              // 'Lost' needs a mandatory reason/comment (Lost modal); a call outcome records 'Not Interested' with its reason instead
+              // 'Lost' needs category + reason (Lost dialog); a call outcome records 'Not Interested' instead
               nextStatus = 'Not Interested';
-              lostPatch = { lostReason: 'Not Interested', lostComment: interactionNotes.trim() || 'Customer not interested (call outcome).' };
-            } else if (callOutcome === 'Contacted' && (l.status === 'Assigned' || l.status === 'New')) {
+              patch.lostReason = 'Not Interested';
+              patch.lostComment = interactionNotes.trim() || 'Customer not interested (call outcome).';
+            } else if (callOutcome === 'Wrong Number') {
+              nextStatus = 'Wrong Number';
+            } else if (callOutcome === 'Contacted' && early) {
               nextStatus = 'Contacted';
             }
-          } else if (interactionType === 'whatsapp' || interactionType === 'email') {
-            if (l.status === 'Assigned' || l.status === 'New') nextStatus = 'Contacted';
+          } else if (interactionType === 'whatsapp') {
+            if (early) { nextStatus = 'Sent WhatsApp'; patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2); }
+          } else if (interactionType === 'email') {
+            if (early) { nextStatus = 'Mail Sent'; patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2); }
           } else if (interactionType === 'meeting') {
-            if (['New', 'Assigned', 'Contacted', 'Follow Up', 'No Answer', 'Waiting Customer'].includes(l.status)) nextStatus = 'Meeting Scheduled';
+            if (statusStage(l.status) === 'active') {
+              nextStatus = 'Scheduled Meeting';
+              patch.meetingDate = interactionDate;
+              patch.meetingTime = interactionTime;
+              patch.nextFollowUpDate = interactionDate;
+              if (!String(l.notes || '').trim()) patch.notes = interactionNotes.trim() || `Meeting on ${interactionDate} ${interactionTime}${interactionLocation ? ` at ${interactionLocation}` : ''}`;
+            }
           } else if (interactionType === 'follow-up') {
-            if (['New', 'Assigned', 'Contacted', 'No Answer', 'Waiting Customer'].includes(l.status)) nextStatus = 'Follow Up';
+            patch.nextFollowUpDate = interactionDate;
+            patch.nextFollowUpTime = interactionTime;
+            if (early) nextStatus = 'Follow Up';
           }
         }
 
-        return {
+        const merged: Lead = {
           ...l,
-          ...lostPatch,
+          ...patch,
           status: nextStatus,
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), timelineEvent]
         };
+        return withSideEffects(l, merged, { id: user ? String(user.id) : undefined });
       }
       return l;
     });
@@ -1208,14 +1192,20 @@ ${user.name || ''}`);
     reader.readAsDataURL(file);
   };
 
-  // WhatsApp Action Triggers
+  // WhatsApp: the team's 11 bilingual templates (Arabic + English, or one of them), filled with the lead's data
+  const [waTemplate, setWaTemplate] = useState('');
+  const [waLang, setWaLangState] = useState<WaLang>(getWaLang());
+  const waWhen = (l: Lead) => ({ date: l.meetingDate || l.nextFollowUpDate || '', time: l.meetingTime || l.nextFollowUpTime || '' });
+  const buildWa = (l: Lead, key: string, lang: WaLang) => waFill(waCompose(key, lang), l, l.assignedSalespersonName || user?.name || 'Sales Person', waWhen(l));
   const handleWhatsappActionClick = () => {
     if (!selectedLead) return;
-    const salesPerson = selectedLead.assignedSalespersonName || user?.name || 'Sales Person';
-    const initialText = `Hello Mr. ${selectedLead.customerName} this is ${salesPerson} from Elsewedy Industrial Development, I has received your request regarding your interest, please let me know how can I help you.\nyou can call back me on this number any time.\nyours \n${salesPerson}`;
-    setWhatsappTemplateText(initialText);
+    const key = suggestTemplate(selectedLead);
+    setWaTemplate(key);
+    setWhatsappTemplateText(buildWa(selectedLead, key, waLang));
     setShowWhatsappTemplateModal(true);
   };
+  const pickWaTemplate = (key: string) => { if (!selectedLead) return; setWaTemplate(key); setWhatsappTemplateText(buildWa(selectedLead, key, waLang)); };
+  const pickWaLang = (lang: WaLang) => { setWaLangState(lang); setWaLang(lang); if (selectedLead && waTemplate) setWhatsappTemplateText(buildWa(selectedLead, waTemplate, lang)); };
 
   const handleWhatsappSend = () => {
     if (!selectedLead) return;
@@ -1240,20 +1230,19 @@ ${user.name || ''}`);
       description: whatsappTemplateText
     };
 
-    // Update Lead status if New or Assigned
-    let nextStatus = selectedLead.status;
-    if (selectedLead.status === 'Assigned' || selectedLead.status === 'New') {
-      nextStatus = 'Contacted';
-    }
+    // New / Assigned -> "Sent WhatsApp" with a follow-up in 2 days (that status needs a next follow-up date)
+    const early = selectedLead.status === 'Assigned' || selectedLead.status === 'New';
 
     const updatedLeads = crmService.getLeads().map(l => {
       if (l.id === selectedLead.id) {
-        return {
+        const merged: Lead = {
           ...l,
-          status: nextStatus,
+          ...(early ? { status: 'Sent WhatsApp' as LeadStatus, nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2) } : {}),
+          lastContactDate: todayISO(),
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), timelineEvent]
         };
+        return withSideEffects(l, merged, { id: user ? String(user.id) : undefined });
       }
       return l;
     });
@@ -1322,20 +1311,19 @@ ${user.name || ''}`);
       description: emailTemplateText
     };
 
-    // Update Lead status if New or Assigned
-    let nextStatus = selectedLead.status;
-    if (selectedLead.status === 'Assigned' || selectedLead.status === 'New') {
-      nextStatus = 'Contacted';
-    }
+    // New / Assigned -> "Mail Sent" with a follow-up in 2 days
+    const early = selectedLead.status === 'Assigned' || selectedLead.status === 'New';
 
     const updatedLeads = crmService.getLeads().map(l => {
       if (l.id === selectedLead.id) {
-        return {
+        const merged: Lead = {
           ...l,
-          status: nextStatus,
+          ...(early ? { status: 'Mail Sent' as LeadStatus, nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2) } : {}),
+          lastContactDate: todayISO(),
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), timelineEvent]
         };
+        return withSideEffects(l, merged, { id: user ? String(user.id) : undefined });
       }
       return l;
     });
@@ -1362,35 +1350,6 @@ ${user.name || ''}`);
     onLeadsUpdated();
   };
 
-  // Direct Status Transition on Detail card
-  const handleDirectStatusChange = (status: LeadStatus) => {
-    if (!selectedLead) return;
-    if (status === selectedLead.status) return;
-    if (status === 'Lost') {
-      setShowLostModal(true);
-      return;
-    }
-    if (status === 'Assigned' && !selectedLead.assignedSalespersonId && !selectedLead.assignedSalespersonName) {
-      alert('Assign a salesperson first; a lead cannot be "Assigned" without one.');
-      return;
-    }
-    if (TERMINAL_STATUSES.includes(selectedLead.status) && !window.confirm(`This lead is ${selectedLead.status}. Re-open it as ${status}?`)) return;
-    if (status === 'Won' && !window.confirm('Mark this lead as Won?')) return;
-    // Leaving Lost clears the stale lost reason
-    const patch: Partial<Lead> = selectedLead.status === 'Lost' ? { status, lostReason: undefined, lostComment: undefined } : { status };
-    const updated = crmService.updateLead(selectedLead.id, patch, user?.name || 'Agent');
-    setSelectedLead(updated);
-    onLeadsUpdated();
-  };
-
-  // Direct Priority Change
-  const handlePriorityChange = (priority: LeadPriority) => {
-    if (!selectedLead) return;
-    const updated = crmService.updateLead(selectedLead.id, { priority }, user?.name || 'Agent');
-    setSelectedLead(updated);
-    onLeadsUpdated();
-  };
-
   // Direct Delete Lead (Admin Only)
   const handleDeleteLead = (id: string) => {
     if (!isAdmin) {
@@ -1411,12 +1370,11 @@ ${user.name || ''}`);
     onLeadsUpdated();
   };
 
-  // Duplicate Check logic: Search if phone exists in other records
+  // Duplicate check: same phone (phone or phone 2) or same e-mail on another lead, by index (no scan of all leads)
   const duplicateWarnings = useMemo(() => {
     if (!selectedLead) return [];
-    const phone = selectedLead.phoneNumber ? normalizePhone(selectedLead.phoneNumber) : '';
-    if (!phone) return []; // blank numbers are not duplicates of each other
-    return leads.filter(l => l.id !== selectedLead.id && l.phoneNumber && normalizePhone(l.phoneNumber) === phone && l.status !== 'Duplicate');
+    return crmService.findDuplicates({ phone: selectedLead.phoneNumber, phone2: selectedLead.phone2, email: selectedLead.email }, selectedLead.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLead, leads]);
 
   // Private notes are for managers/operations (and their author) only
@@ -1477,7 +1435,8 @@ ${user.name || ''}`);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (showSourceEmailModal) setShowSourceEmailModal(false);
+      if (bulkWon) setBulkWon(null);
+      else if (showSourceEmailModal) setShowSourceEmailModal(false);
       else if (deleteConfirmLeadId) setDeleteConfirmLeadId(null);
       else if (deleteConfirmBulk) setDeleteConfirmBulk(false);
       else if (showLostModal) setShowLostModal(false);
@@ -1491,7 +1450,46 @@ ${user.name || ''}`);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [showSourceEmailModal, deleteConfirmLeadId, deleteConfirmBulk, showLostModal, showWhatsappTemplateModal, showEmailTemplateModal, showInteractionModal, showMergeModal, showAssignModal, showCreateModal, selectedLead]);
+  }, [bulkWon, showSourceEmailModal, deleteConfirmLeadId, deleteConfirmBulk, showLostModal, showWhatsappTemplateModal, showEmailTemplateModal, showInteractionModal, showMergeModal, showAssignModal, showCreateModal, selectedLead]);
+
+  // Columns as one string (a memoised row compares it cheaply)
+  const visibleColsKey = useMemo(() => visibleColumns.join(','), [visibleColumns]);
+  const canRoute = currentRole !== 'Read Only' && currentRole !== 'Sales Rep';
+  const openAssignFor = useCallback((l: Lead) => { setSelectedLead(l); setShowAssignModal(true); }, []);
+
+  // Kanban: one pass puts every lead in its column (team and legacy statuses alike, via leadConfig)
+  const kanban = useMemo(() => {
+    const b: Record<KanbanKey, Lead[]> = { new: [], working: [], pipeline: [], closed: [] };
+    if (viewMode === 'kanban') for (const l of filteredLeads) b[kanbanBucket(l.status)].push(l);
+    return b;
+  }, [filteredLeads, viewMode]);
+
+  // Calendar: leads per day of the shown month, one pass (registered / follow-up / meeting / timeline events)
+  const calendarIndex = useMemo(() => {
+    const m = new Map<string, Lead[]>();
+    if (viewMode !== 'calendar') return m;
+    const prefix = `${calMonth.y}-${pad2(calMonth.m + 1)}`;
+    const near = new Set([prefix, `${new Date(calMonth.y, calMonth.m - 1, 1).getFullYear()}-${pad2(new Date(calMonth.y, calMonth.m - 1, 1).getMonth() + 1)}`, `${new Date(calMonth.y, calMonth.m + 1, 1).getFullYear()}-${pad2(new Date(calMonth.y, calMonth.m + 1, 1).getMonth() + 1)}`]);
+    for (const l of filteredLeads) {
+      const days = new Set<string>();
+      const add = (d: string) => { if (d && d.startsWith(prefix)) days.add(d); };
+      add(dayOf(l.date)); add(l.nextFollowUpDate || ''); add(l.meetingDate || '');
+      for (const t of l.timeline || []) if (t.timestamp && near.has(t.timestamp.slice(0, 7))) add(dayOf(t.timestamp));
+      days.forEach((d) => { const a = m.get(d); if (a) a.push(l); else m.set(d, [l]); });
+    }
+    return m;
+  }, [filteredLeads, calMonth, viewMode]);
+
+  // Rights of the signed-in user on the open lead (a convenience: the server is the authority)
+  const leadAuth = useMemo((): LeadAuth => {
+    const role = user?.role || currentRole;
+    const isOps = isAdmin || role === 'Sales Operation' || !!permissions?.canViewSalesRules;
+    const myId = user ? String(user.id) : '';
+    const owner = selectedLead?.assignedSalespersonId ? String(selectedLead.assignedSalespersonId) : '';
+    const isOwner = !!owner && owner === myId;
+    const isTeamLead = role === 'Sales Team Leader' && (!owner || isOwner || (salespeople as any[]).some((s) => String(s.id) === owner && s.teamLeaderId === myId));
+    return { isOps, isOwner, isTeamLead, readOnly: currentRole === 'Read Only' || role === 'Read Only', canConfirmCash: !!permissions?.canConfirmCash };
+  }, [user, currentRole, isAdmin, permissions, selectedLead, salespeople]);
 
   return (
     <div className="space-y-6" id="crm-leads-root">
@@ -1625,21 +1623,15 @@ ${user.name || ''}`);
                   className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-medium focus:outline-none"
                 >
                   <option value="All">All Statuses</option>
-                  <option value="New">New / Operations Review</option>
-                  <option value="Assigned">Assigned to Rep</option>
-                  <option value="Contacted">Contacted</option>
-                  <option value="Follow Up">In Follow Up</option>
-                  <option value="Meeting Scheduled">Meeting Scheduled</option>
-                  <option value="Negotiation">Negotiation</option>
-                  <option value="Quotation Sent">Quotation Sent</option>
-                  <option value="Won">Closed Won</option>
-                  <option value="Lost">Closed Lost</option>
-                  <option value="Waiting Customer">Waiting Customer</option>
-                  <option value="No Answer">No Answer</option>
-                  <option value="Not Interested">Not Interested</option>
-                  <option value="Invalid">Invalid</option>
-                  <option value="Closed">Closed</option>
-                  <option value="Duplicate">Duplicate Record</option>
+                  <option value="OpenLeads">Open leads (not closed)</option>
+                  {STATUS_GROUPS.map(g => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.statuses.map(st => <option key={st} value={st}>{st}</option>)}
+                    </optgroup>
+                  ))}
+                  <optgroup label="Legacy">
+                    {LEGACY_STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+                  </optgroup>
                 </select>
               </div>
 
@@ -1665,10 +1657,7 @@ ${user.name || ''}`);
                   className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs font-medium focus:outline-none"
                 >
                   <option value="All">All Priorities</option>
-                  <option value="Urgent">Urgent (2 Hrs)</option>
-                  <option value="High">High (8 Hrs)</option>
-                  <option value="Normal">Normal (24 Hrs)</option>
-                  <option value="Low">Low (48 Hrs)</option>
+                  {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
                 </select>
               </div>
 
@@ -1722,7 +1711,11 @@ ${user.name || ''}`);
         <div className="bg-brand-black text-white p-4 rounded-2xl flex flex-col sm:flex-row justify-between items-center gap-4 shadow-md">
           <div className="flex items-center gap-2">
             <span className="w-2 h-2 bg-brand-red rounded-full animate-ping" />
-            <span className="text-xs font-bold">{selectedLeadIds.length} Leads selected for Bulk Action</span>
+            <span className="text-xs font-bold">{selectedLeadIds.length.toLocaleString('en-US')} Leads selected for Bulk Action</span>
+            {!allFilteredSelected && pageAllSelected && filteredLeads.length > pageLeads.length && (
+              <button onClick={selectAllFiltered} className="text-[11px] underline font-bold text-white/90 hover:text-white">Select all {filteredLeads.length.toLocaleString('en-US')} filtered leads</button>
+            )}
+            {allFilteredSelected && filteredLeads.length > pageLeads.length && <span className="text-[11px] text-white/70">(all {filteredLeads.length.toLocaleString('en-US')} filtered leads)</span>}
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <select
@@ -1763,8 +1756,8 @@ ${user.name || ''}`);
         <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-brand-gray" size={16} />
         <input
           type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           placeholder="Global Search across Leads (by name, phone, email, project, CRM Id, salesperson, comments...)"
           className="w-full pl-10 pr-4 py-3 bg-white border border-brand-gray/20 rounded-2xl focus:outline-none focus:ring-1 focus:ring-brand-red focus:border-brand-red shadow-sm text-xs font-medium"
         />
@@ -1778,12 +1771,8 @@ ${user.name || ''}`);
               <thead>
                 <tr className="bg-brand-gray/5 border-b border-brand-gray/15 text-brand-gray text-[10px] font-bold uppercase tracking-wider">
                   <th className="py-4 px-4 w-10">
-                    <button onClick={handleSelectAll} aria-label="Select all leads" className="focus:outline-none">
-                      {selectedLeadIds.length === filteredLeads.length && filteredLeads.length > 0 ? (
-                        <CheckSquare size={16} className="text-brand-red" />
-                      ) : (
-                        <Square size={16} />
-                      )}
+                    <button onClick={handleSelectAll} aria-label="Select all leads on this page" title="Select the leads on this page" className="focus:outline-none">
+                      {pageAllSelected ? <CheckSquare size={16} className="text-brand-red" /> : <Square size={16} />}
                     </button>
                   </th>
                   {columns.id && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('id')}>Lead ID</th>}
@@ -1793,131 +1782,31 @@ ${user.name || ''}`);
                   {columns.size && <th className="py-4 px-3 cursor-pointer text-right" onClick={() => handleSort('requiredSize')}>Size</th>}
                   {columns.slaStatus && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('slaDeadline')}>SLA Status</th>}
                   {columns.priority && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('priority')}>Priority</th>}
+                  {columns.score && <th className="py-4 px-3">Score</th>}
                   {columns.status && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('status')}>Funnel Status</th>}
                   {columns.assigned && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('assignedSalespersonName')}>Assigned Agent</th>}
                   <th className="py-4 px-4 text-right w-20">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-brand-gray/10 text-xs font-medium text-brand-black">
-                {filteredLeads.length > 0 ? (
-                  filteredLeads.map((l) => {
-                    const isSelected = selectedLeadIds.includes(l.id);
-                    
-                    // Priority tag colors
-                    let pColor = 'bg-brand-gray/10 text-brand-gray';
-                    if (l.priority === 'Urgent') pColor = 'bg-rose-100 text-rose-700 font-bold';
-                    else if (l.priority === 'High') pColor = 'bg-orange-100 text-orange-700';
-                    else if (l.priority === 'Normal') pColor = 'bg-blue-100 text-blue-700';
-
-                    // Status pill color
-                    let sColor = 'bg-brand-gray/10 text-brand-gray';
-                    if (l.status === 'New') sColor = 'bg-yellow-50 text-yellow-700 border border-yellow-200';
-                    else if (l.status === 'Assigned') sColor = 'bg-purple-50 text-purple-700 border border-purple-200';
-                    else if (l.status === 'Contacted') sColor = 'bg-indigo-50 text-indigo-700 border border-indigo-200';
-                    else if (l.status === 'Won') sColor = 'bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold';
-                    else if (l.status === 'Lost') sColor = 'bg-rose-100 text-rose-800 border border-rose-300';
-                    else if (['Meeting Scheduled', 'Negotiation', 'Quotation Sent'].includes(l.status)) sColor = 'bg-blue-50 text-blue-700 border border-blue-200';
-
-                    return (
-                      <tr key={l.id} className={`hover:bg-brand-gray/5 transition-all ${isSelected ? 'bg-brand-red/5' : ''}`}>
-                        <td className="py-3.5 px-4">
-                          <button onClick={() => handleSelectLead(l.id)} aria-label={`Select lead ${l.id}`} className="focus:outline-none">
-                            {isSelected ? (
-                              <CheckSquare size={16} className="text-brand-red" />
-                            ) : (
-                              <Square size={16} className="text-brand-gray/60" />
-                            )}
-                          </button>
-                        </td>
-                        {columns.id && (
-                          <td className="py-3.5 px-3">
-                            <span className="font-mono font-bold text-brand-black hover:underline cursor-pointer" onClick={() => setSelectedLead(l)}>
-                              {l.id}
-                            </span>
-                          </td>
-                        )}
-                        {columns.date && <td className="py-3.5 px-3 text-brand-gray whitespace-nowrap font-mono whitespace-nowrap">{formatLeadDateTime(l.date)}</td>}
-                        {columns.customer && (
-                          <td className="py-3.5 px-3">
-                            <div>
-                              <p className="font-bold text-brand-black">{l.customerName}</p>
-                              <p className="text-[10px] text-brand-gray/80 font-mono mt-0.5">{l.phoneNumber}</p>
-                            </div>
-                          </td>
-                        )}
-                        {columns.project && <td className="py-3.5 px-3 text-brand-gray whitespace-nowrap">{l.project}</td>}
-                        {columns.size && <td className="py-3.5 px-3 text-right font-mono whitespace-nowrap">{fmtSize(l.requiredSize)}</td>}
-                        {columns.slaStatus && (
-                          <td className="py-3.5 px-3">
-                            {l.slaDeadline ? (
-                              <span className={`whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                                getSlaStatus(l).isViolated ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                              }`}>
-                                {getSlaStatus(l).isViolated ? `Violated (${getSlaStatus(l).remainingText})` : `${getSlaStatus(l).remainingText}`}
-                              </span>
-                            ) : (
-                              <span className="text-brand-gray/50 text-[10px]">No SLA Set</span>
-                            )}
-                          </td>
-                        )}
-                        {columns.priority && (
-                          <td className="py-3.5 px-3">
-                            <span className={`whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-semibold ${pColor}`}>
-                              {l.priority}
-                            </span>
-                          </td>
-                        )}
-                        {columns.status && (
-                          <td className="py-3.5 px-3">
-                            <span className={`whitespace-nowrap px-2.5 py-1 rounded-full text-[10px] font-bold ${sColor}`}>
-                              {l.status}
-                            </span>
-                          </td>
-                        )}
-                        {columns.assigned && (
-                          <td className="py-3.5 px-3 text-brand-gray whitespace-nowrap">
-                            {l.assignedSalespersonName ? (
-                              <span className="flex items-center gap-1">
-                                <UserCheck size={12} className="text-indigo-600" />
-                                <span>{l.assignedSalespersonName}</span>
-                              </span>
-                            ) : (
-                              <span className="text-rose-500 font-bold flex items-center gap-1 text-[10px] bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full w-max">
-                                <AlertTriangle size={10} />
-                                <span>UNROUTED QUEUE</span>
-                              </span>
-                            )}
-                          </td>
-                        )}
-                        <td className="py-3.5 px-4 text-right">
-                          <div className="flex justify-end gap-1.5">
-                            <button
-                              onClick={() => setSelectedLead(l)}
-                              className="p-1.5 hover:bg-brand-gray/15 rounded-lg text-brand-black"
-                              title="View Lead Details"
-                            >
-                              <Info size={14} />
-                            </button>
-                            {currentRole !== 'Read Only' && currentRole !== 'Sales Rep' && (
-                              <button
-                                onClick={() => {
-                                  setSelectedLead(l);
-                                  setShowAssignModal(true);
-                                }}
-                                className="p-1.5 hover:bg-indigo-50 rounded-lg text-indigo-600"
-                                title="Route to Salesperson"
-                              >
-                                <UserPlus size={14} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
+                {pageLeads.length > 0 ? (
+                  pageLeads.map((l) => (
+                    <LeadRow
+                      key={l.id}
+                      lead={l}
+                      selected={selectedSet.has(l.id)}
+                      cols={visibleColsKey}
+                      tick={tick}
+                      canAssign={canRoute}
+                      winRate={winRates.get(String(l.source || '')) || 0}
+                      onSelect={handleSelectLead}
+                      onOpen={setSelectedLead}
+                      onAssign={openAssignFor}
+                    />
+                  ))
                 ) : (
                   <tr>
-                    <td colSpan={11} className="py-8 text-center text-brand-gray text-xs">
+                    <td colSpan={12} className="py-8 text-center text-brand-gray text-xs">
                       No matching leads in active database queue. Apply filters or register inbound leads.
                     </td>
                   </tr>
@@ -1925,225 +1814,46 @@ ${user.name || ''}`);
               </tbody>
             </table>
           </div>
+          <PagerBar total={filteredLeads.length} page={safePage} pageSize={pageSize} onPage={setPage} onSize={setPageSize} />
         </div>
       )}
 
       {/* -------------------- 2. KANBAN BOARD VIEW -------------------- */}
       {viewMode === 'kanban' && (
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 overflow-x-auto pb-4">
-          
-          {/* Operations review */}
-          <div className="bg-brand-gray/5 border border-brand-gray/20 rounded-2xl p-4 flex flex-col h-[550px] min-w-[250px]">
-            <div className="flex justify-between items-center mb-3">
-              <span className="text-[10px] font-extrabold uppercase text-amber-700 tracking-wider">1. Ops Review</span>
-              <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {filteredLeads.filter(l => l.status === 'New').length}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-              {filteredLeads.filter(l => l.status === 'New').map(l => {
-                const slaInfo = getSlaStatus(l);
-                const cardClass = slaInfo.isViolated
-                  ? "bg-red-50 border-red-300 p-3.5 rounded-xl border hover:border-red-400 cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 relative text-red-950"
-                  : "bg-white p-3.5 rounded-xl border border-brand-gray/15 hover:border-brand-red/30 cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 relative";
-                
-                return (
-                  <div 
-                    key={l.id} 
-                    onClick={() => setSelectedLead(l)}
-                    className={cardClass}
-                  >
-                    <div className="flex justify-between items-start">
-                      <span className="font-mono text-[10px] font-bold text-brand-red">{l.id}</span>
-                      <span className="bg-rose-100 text-rose-700 text-[9px] font-bold px-1.5 py-0.5 rounded">{l.priority}</span>
-                    </div>
-                    <div>
-                      <h5 className="font-bold text-brand-black text-xs leading-snug">{l.customerName}</h5>
-                      <p className="text-[10px] text-brand-gray/80 font-semibold">{l.companyName || 'Private Person'}</p>
-                    </div>
-
-                    {/* SLA Status display */}
-                    {l.slaDeadline && (
-                      <div className={`flex items-center gap-1.5 text-[10px] font-bold py-1 px-2 rounded-lg border w-fit ${slaInfo.isViolated ? 'bg-red-100/50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
-                        <Clock size={11} className={slaInfo.isViolated ? "text-red-600 animate-pulse" : "text-amber-600"} />
-                        <span>{slaInfo.isViolated ? `Violated: ${slaInfo.remainingText}` : `${slaInfo.remainingText}`}</span>
-                      </div>
-                    )}
-
-                    <div className="flex justify-between items-center text-[10px] pt-2 border-t border-brand-gray/10 text-brand-gray font-mono whitespace-nowrap">
-                      <span>{fmtSize(l.requiredSize)}</span>
-                      <span className={`font-bold ${slaInfo.isViolated ? 'text-rose-600' : 'text-emerald-700'}`}>{slaInfo.text}</span>
-                    </div>
-                    {/* Click to fast move */}
-                    {currentRole !== 'Read Only' && currentRole !== 'Sales Rep' && (
-                      <div className="flex justify-end gap-1 pt-1">
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedLead(l);
-                            setShowAssignModal(true);
-                          }}
-                          className="text-[9px] bg-brand-black text-white px-2 py-1 rounded font-bold hover:scale-105 transition-all"
-                        >
-                          Route Agent
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Assigned & Contacted */}
-          <div className="bg-brand-gray/5 border border-brand-gray/20 rounded-2xl p-4 flex flex-col h-[550px] min-w-[250px]">
-            <div className="flex justify-between items-center mb-3">
-              <span className="text-[10px] font-extrabold uppercase text-purple-700 tracking-wider">2. Assigned / Contacted</span>
-              <span className="bg-purple-100 text-purple-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {filteredLeads.filter(l => ['Assigned', 'Contacted'].includes(l.status)).length}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-              {filteredLeads.filter(l => ['Assigned', 'Contacted'].includes(l.status)).map(l => {
-                const slaInfo = getSlaStatus(l);
-                const cardClass = slaInfo.isViolated
-                  ? "bg-red-50 border-red-300 p-3.5 rounded-xl border hover:border-red-400 cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 relative text-red-950"
-                  : "bg-white p-3.5 rounded-xl border border-brand-gray/15 hover:border-indigo-400/35 cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 relative";
-                
-                return (
-                  <div 
-                    key={l.id} 
-                    onClick={() => setSelectedLead(l)}
-                    className={cardClass}
-                  >
-                    <div className="flex justify-between items-start">
-                      <span className="font-mono text-[10px] font-bold text-indigo-600">{l.id}</span>
-                      <span className="bg-indigo-50 text-indigo-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-indigo-200">{l.status}</span>
-                    </div>
-                    <div>
-                      <h5 className="font-bold text-brand-black text-xs leading-snug">{l.customerName}</h5>
-                      <p className="text-[10px] text-indigo-600 font-bold flex items-center gap-1 mt-0.5">
-                        <UserCheck size={10} />
-                        <span>{l.assignedSalespersonName}</span>
-                      </p>
-                    </div>
-
-                    {/* SLA Status display */}
-                    {l.slaDeadline && (
-                      <div className={`flex items-center gap-1.5 text-[10px] font-bold py-1 px-2 rounded-lg border w-fit ${slaInfo.isViolated ? 'bg-red-100/50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
-                        <Clock size={11} className={slaInfo.isViolated ? "text-red-600 animate-pulse" : "text-amber-600"} />
-                        <span>{slaInfo.isViolated ? `Violated: ${slaInfo.remainingText}` : `${slaInfo.remainingText}`}</span>
-                      </div>
-                    )}
-
-                    <div className="flex justify-between items-center text-[10px] pt-2 border-t border-brand-gray/10 text-brand-gray font-mono whitespace-nowrap">
-                      <span>{fmtSize(l.requiredSize)}</span>
-                      <span className={`font-bold ${slaInfo.isViolated ? 'text-rose-600' : 'text-emerald-700'}`}>{slaInfo.text}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Qualified Meeting & Quotations */}
-          <div className="bg-brand-gray/5 border border-brand-gray/20 rounded-2xl p-4 flex flex-col h-[550px] min-w-[250px]">
-            <div className="flex justify-between items-center mb-3">
-              <span className="text-[10px] font-extrabold uppercase text-blue-700 tracking-wider">3. In Qualification</span>
-              <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {filteredLeads.filter(l => ['Follow Up', 'Meeting Scheduled', 'Negotiation', 'Quotation Sent', 'Waiting Customer', 'No Answer'].includes(l.status)).length}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-              {filteredLeads.filter(l => ['Follow Up', 'Meeting Scheduled', 'Negotiation', 'Quotation Sent', 'Waiting Customer', 'No Answer'].includes(l.status)).map(l => {
-                const slaInfo = getSlaStatus(l);
-                const cardClass = slaInfo.isViolated
-                  ? "bg-red-50 border-red-300 p-3.5 rounded-xl border hover:border-red-400 cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 relative text-red-950"
-                  : "bg-white p-3.5 rounded-xl border border-brand-gray/15 hover:border-blue-400/35 cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 relative";
-                
-                return (
-                  <div 
-                    key={l.id} 
-                    onClick={() => setSelectedLead(l)}
-                    className={cardClass}
-                  >
-                    <div className="flex justify-between items-start">
-                      <span className="font-mono text-[10px] font-bold text-blue-600">{l.id}</span>
-                      <span className="bg-blue-50 text-blue-700 text-[9px] px-1.5 py-0.5 rounded font-bold border border-blue-200">{l.status}</span>
-                    </div>
-                    <div>
-                      <h5 className="font-bold text-brand-black text-xs leading-snug">{l.customerName}</h5>
-                      <p className="text-[10px] text-brand-gray/80 font-semibold">{l.assignedSalespersonName}</p>
-                    </div>
-
-                    {/* SLA Status display */}
-                    {l.slaDeadline && (
-                      <div className={`flex items-center gap-1.5 text-[10px] font-bold py-1 px-2 rounded-lg border w-fit ${slaInfo.isViolated ? 'bg-red-100/50 border-red-200 text-red-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`}>
-                        <Clock size={11} className={slaInfo.isViolated ? "text-red-600 animate-pulse" : "text-amber-600"} />
-                        <span>{slaInfo.isViolated ? `Violated: ${slaInfo.remainingText}` : `${slaInfo.remainingText}`}</span>
-                      </div>
-                    )}
-
-                    <div className="flex justify-between items-center text-[10px] pt-2 border-t border-brand-gray/10 text-brand-gray font-mono whitespace-nowrap">
-                      <span>{fmtSize(l.requiredSize)}</span>
-                      <span className={`font-bold ${slaInfo.isViolated ? 'text-rose-600' : 'text-emerald-700'}`}>{slaInfo.text}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Won / Lost Closure */}
-          <div className="bg-brand-gray/5 border border-brand-gray/20 rounded-2xl p-4 flex flex-col h-[550px] min-w-[250px]">
-            <div className="flex justify-between items-center mb-3">
-              <span className="text-[10px] font-extrabold uppercase text-emerald-700 tracking-wider">4. Closed Deals</span>
-              <span className="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                {filteredLeads.filter(l => ['Won', 'Lost', 'Not Interested', 'Invalid', 'Closed', 'Duplicate'].includes(l.status)).length}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-              {filteredLeads.filter(l => ['Won', 'Lost', 'Not Interested', 'Invalid', 'Closed', 'Duplicate'].includes(l.status)).map(l => {
-                const isWon = l.status === 'Won';
-                const slaInfo = getSlaStatus(l);
-                
-                return (
-                  <div 
-                    key={l.id} 
-                    onClick={() => setSelectedLead(l)}
-                    className={`p-3.5 rounded-xl border cursor-pointer shadow-sm hover:shadow-md transition-all space-y-2.5 ${isWon ? 'bg-emerald-50/50 border-emerald-200 hover:border-emerald-400' : 'bg-rose-50/50 border-rose-200 hover:border-rose-400'}`}
-                  >
-                    <div className="flex justify-between items-start">
-                      <span className="font-mono text-[10px] font-bold text-brand-black">{l.id}</span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-extrabold border ${isWon ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-rose-100 text-rose-800 border-rose-300'}`}>
-                        {l.status}
-                      </span>
-                    </div>
-                    <div>
-                      <h5 className="font-bold text-brand-black text-xs leading-snug">{l.customerName}</h5>
-                      <p className="text-[10px] text-brand-gray/80 font-semibold">{l.companyName || 'Private Person'}</p>
-                    </div>
-
-                    {/* SLA Outcome display */}
-                    {l.slaDeadline && (
-                      <div className={`flex items-center gap-1.5 text-[10px] font-bold py-1 px-2 rounded-lg border w-fit ${slaInfo.status === 'missed' ? 'bg-red-50 border-red-200 text-red-700' : 'bg-emerald-50 border-emerald-200 text-emerald-700'}`}>
-                        <Clock size={11} className={slaInfo.status === 'missed' ? "text-red-500" : "text-emerald-500"} />
-                        <span>{slaInfo.status === 'missed' ? "SLA Missed" : "SLA Met"}</span>
-                      </div>
-                    )}
-
-                    <div className="flex justify-between items-center text-[10px] pt-2 border-t border-brand-gray/10 text-brand-gray font-mono whitespace-nowrap">
-                      <span>{fmtSize(l.requiredSize)}</span>
-                      <span className={`font-bold ${slaInfo.status === 'missed' ? 'text-rose-600' : 'text-emerald-700'}`}>
-                        {slaInfo.status === 'missed' ? "SLA Missed" : "SLA Met"}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
+          {KANBAN_COLS.map((col) => {
+            const all = kanban[col.key];
+            const cap = kanbanCap[col.key] || KANBAN_PAGE;
+            const shown = all.slice(0, cap);
+            return (
+              <div key={col.key} className="bg-brand-gray/5 border border-brand-gray/20 rounded-2xl p-4 flex flex-col h-[550px] min-w-[250px]">
+                <div className="flex justify-between items-center mb-3">
+                  <span className={`text-[10px] font-extrabold uppercase tracking-wider ${col.title}`}>{col.label}</span>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${col.badge}`}>{all.length.toLocaleString('en-US')}</span>
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                  {shown.map((l) => (
+                    <KanbanCard
+                      key={l.id}
+                      lead={l}
+                      tick={tick}
+                      tone={col.tone}
+                      winRate={winRates.get(String(l.source || '')) || 0}
+                      canRoute={canRoute && col.key === 'new'}
+                      onOpen={setSelectedLead}
+                      onAssign={openAssignFor}
+                    />
+                  ))}
+                  {all.length > cap && (
+                    <button onClick={() => setKanbanCap((c) => ({ ...c, [col.key]: cap + KANBAN_PAGE }))} className="w-full text-[11px] font-bold text-brand-red bg-white border border-brand-gray/20 rounded-xl py-2 hover:bg-brand-red/5">
+                      Show more ({(all.length - cap).toLocaleString('en-US')} left)
+                    </button>
+                  )}
+                  {all.length === 0 && <p className="text-[11px] text-brand-gray/70 text-center pt-6">No leads here.</p>}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -2160,40 +1870,32 @@ ${user.name || ''}`);
           </div>
 
           <div className="grid grid-cols-7 gap-2 text-center text-[10px] font-bold text-brand-gray uppercase tracking-widest pb-2 border-b border-brand-gray/10">
-            <div>Sun</div>
-            <div>Mon</div>
-            <div>Tue</div>
-            <div>Wed</div>
-            <div>Thu</div>
-            <div>Fri</div>
-            <div>Sat</div>
+            <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
           </div>
 
-          <div className="grid grid-cols-7 gap-2 text-left h-96">
+          <div className="grid grid-cols-7 gap-2 text-left">
             {calendarDays.map((item, idx) => {
-              // Retrieve leads that have follow up actions, creation or expected closed on this date
-              const dayLeads = item.dateStr ? filteredLeads.filter(l => dayOf(l.date) === item.dateStr || l.nextFollowUpDate === item.dateStr || (l.timeline || []).some(t => dayOf(t.timestamp) === item.dateStr)) : [];
-              
+              const dayLeads = item.dateStr ? (calendarIndex.get(item.dateStr) || []) : [];
               return (
-                <div 
-                  key={idx} 
-                  className={`border border-brand-gray/10 rounded-xl p-2 h-16 flex flex-col justify-between overflow-hidden relative group transition-all hover:bg-brand-red/5 ${!item.day ? 'bg-brand-gray/5 opacity-50' : 'bg-white'}`}
+                <div
+                  key={idx}
+                  className={`border rounded-xl p-2 h-20 flex flex-col justify-between overflow-hidden relative group transition-all hover:bg-brand-red/5 ${!item.day ? 'bg-brand-gray/5 opacity-50 border-brand-gray/10' : calDay === item.dateStr ? 'bg-brand-red/5 border-brand-red/40' : 'bg-white border-brand-gray/10'}`}
                 >
-                  <span className="text-xs font-bold text-brand-gray group-hover:text-brand-black">{item.day}</span>
+                  <button disabled={!item.day} onClick={() => { setCalDay(item.dateStr); setCalCap(50); }} className="text-xs font-bold text-brand-gray group-hover:text-brand-black text-left">{item.day}</button>
                   {dayLeads.length > 0 && (
-                    <div className="space-y-0.5 max-h-8 overflow-hidden">
-                      {dayLeads.slice(0, 2).map((dl, lIdx) => (
-                        <div 
-                          key={`${dl.id}-${idx}-${lIdx}`}
+                    <div className="space-y-0.5 max-h-10 overflow-hidden">
+                      {dayLeads.slice(0, 2).map((dl) => (
+                        <div
+                          key={dl.id}
                           onClick={() => setSelectedLead(dl)}
-                          className="bg-brand-red text-white text-[8px] font-bold px-1 py-0.5 rounded truncate cursor-pointer hover:scale-102 transition-all block"
+                          className="bg-brand-red text-white text-[8px] font-bold px-1 py-0.5 rounded truncate cursor-pointer block"
                           title={`${dl.customerName} - ${dl.project}`}
                         >
                           {(dl.customerName || '—').split(' ')[0]}
                         </div>
                       ))}
                       {dayLeads.length > 2 && (
-                        <span className="text-[8px] font-bold text-brand-gray/70">+{dayLeads.length - 2} more</span>
+                        <button onClick={() => { setCalDay(item.dateStr); setCalCap(50); }} className="text-[8px] font-bold text-brand-gray/70 hover:text-brand-red">+{dayLeads.length - 2} more</button>
                       )}
                     </div>
                   )}
@@ -2201,6 +1903,29 @@ ${user.name || ''}`);
               );
             })}
           </div>
+
+          {calDay && (() => {
+            const list = calendarIndex.get(calDay) || [];
+            return (
+              <div className="border border-brand-gray/15 rounded-xl p-3 bg-brand-gray/5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-brand-black">{calDay}: {list.length.toLocaleString('en-US')} lead{list.length === 1 ? '' : 's'}</span>
+                  <button onClick={() => setCalDay(null)} className="text-[11px] text-brand-gray hover:text-brand-black font-bold">Close</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
+                  {list.slice(0, calCap).map((dl) => (
+                    <button key={dl.id} onClick={() => setSelectedLead(dl)} className="flex items-center justify-between gap-2 text-left bg-white border border-brand-gray/15 rounded-lg px-2.5 py-1.5 hover:border-brand-red/40">
+                      <span className="truncate text-xs"><span className="font-mono font-bold text-brand-red mr-1.5">{dl.id}</span>{dl.customerName}</span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold whitespace-nowrap ${statusClass(dl.status)}`}>{dl.status}</span>
+                    </button>
+                  ))}
+                </div>
+                {list.length > calCap && (
+                  <button onClick={() => setCalCap((c) => c + 50)} className="mt-2 text-[11px] font-bold text-brand-red">Show more ({list.length - calCap} left)</button>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -2238,7 +1963,7 @@ ${user.name || ''}`);
                     type="text"
                     required
                     value={newLeadForm.phoneNumber}
-                    onChange={(e) => setNewLeadForm({ ...newLeadForm, phoneNumber: e.target.value })}
+                    onChange={(e) => { setCreateDup(null); setNewLeadForm({ ...newLeadForm, phoneNumber: e.target.value }); }}
                     placeholder="e.g., 01118485856"
                     className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none font-mono"
                   />
@@ -2251,7 +1976,7 @@ ${user.name || ''}`);
                   <input
                     type="email"
                     value={newLeadForm.email}
-                    onChange={(e) => setNewLeadForm({ ...newLeadForm, email: e.target.value })}
+                    onChange={(e) => { setCreateDup(null); setNewLeadForm({ ...newLeadForm, email: e.target.value }); }}
                     placeholder="e.g., eslam.samany@stefner.com"
                     className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none"
                   />
@@ -2303,20 +2028,14 @@ ${user.name || ''}`);
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Lead Channel Source</label>
+                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Lead Channel Source *</label>
                   <select
                     value={newLeadForm.source}
                     onChange={(e) => setNewLeadForm({ ...newLeadForm, source: e.target.value })}
                     className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none"
                   >
-                    <option value="Website">Website</option>
-                    <option value="Email">Email Server</option>
-                    <option value="Call Center">Call Center</option>
-                    <option value="Manual Entry">Manual Operator Entry</option>
-                    <option value="WhatsApp">WhatsApp Inbound</option>
-                    <option value="Facebook">Facebook Ads</option>
-                    <option value="LinkedIn">LinkedIn Inbound</option>
-                    <option value="Brokers">Broker Network</option>
+                    <option value="">Select source...</option>
+                    {SOURCES.map(src => <option key={src} value={src}>{src}</option>)}
                   </select>
                 </div>
 
@@ -2327,13 +2046,39 @@ ${user.name || ''}`);
                     onChange={(e) => setNewLeadForm({ ...newLeadForm, priority: e.target.value as LeadPriority })}
                     className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none"
                   >
-                    <option value="Urgent">Urgent (2 Working Hours)</option>
-                    <option value="High">High (8 Working Hours)</option>
-                    <option value="Normal">Normal (24 Working Hours)</option>
-                    <option value="Low">Low (48 Working Hours)</option>
+                    {PRIORITIES.map(p => <option key={p} value={p}>{p}{p === 'VIP' ? ' (first contact within 4 hours)' : ''}</option>)}
                   </select>
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Mobile Number 2</label>
+                  <input type="text" value={newLeadForm.phone2} onChange={(e) => setNewLeadForm({ ...newLeadForm, phone2: e.target.value })} className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none font-mono" />
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Industry</label>
+                  <select value={newLeadForm.industry} onChange={(e) => setNewLeadForm({ ...newLeadForm, industry: e.target.value })} className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none">
+                    <option value="">—</option>
+                    {INDUSTRIES.map(i => <option key={i} value={i}>{i}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Nationality</label>
+                  <datalist id="crm-nat-create">{NATIONALITIES.map(n => <option key={n} value={n} />)}</datalist>
+                  <input list="crm-nat-create" value={newLeadForm.nationality} onChange={(e) => setNewLeadForm({ ...newLeadForm, nationality: e.target.value })} className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none" />
+                </div>
+              </div>
+
+              {createDup && (
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 space-y-2">
+                  <p className="text-[11px] leading-relaxed flex gap-2"><AlertTriangle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" /><span>Lead <strong>{createDup.lead.id}</strong> ({createDup.lead.customerName}) already has {createDup.why}. It is owned by <strong>{createDup.lead.assignedSalespersonName || 'nobody yet (unrouted queue)'}</strong>.</span></p>
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => { setShowCreateModal(false); setSelectedLead(createDup.lead); setCreateDup(null); }} className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1.5 rounded-lg text-[11px]">Open that lead</button>
+                    {isOps && <button type="button" onClick={(e) => handleCreateLead(e as any, true)} className="bg-white border border-amber-300 font-bold px-3 py-1.5 rounded-lg text-[11px]">Create another lead anyway</button>}
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Inquiry Description Comments</label>
@@ -2349,7 +2094,7 @@ ${user.name || ''}`);
               <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-xl flex gap-3 text-yellow-800">
                 <Info size={16} className="text-yellow-600 flex-shrink-0 mt-0.5" />
                 <p className="text-[11px] leading-relaxed">
-                  <strong>Automatic Duplicate Detection:</strong> Phone number is used as the unique record key. If this mobile exists in Contacts, the lead is appended to that contact history automatically.
+                  <strong>Automatic Duplicate Detection:</strong> the same phone number (any format) or the same e-mail address on another lead is detected before saving; you will see who owns it and can open that lead.
                 </p>
               </div>
 
@@ -2567,20 +2312,8 @@ ${user.name || ''}`);
                     <div className="flex justify-between items-center flex-wrap gap-3">
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-extrabold uppercase tracking-wider opacity-80">Priority:</span>
-                        {currentRole !== 'Read Only' ? (
-                          <select
-                            value={selectedLead.priority}
-                            onChange={(e) => handlePriorityChange(e.target.value as LeadPriority)}
-                            className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2.5 py-1 rounded-xl border border-rose-300 focus:outline-none cursor-pointer"
-                          >
-                            <option value="Low">Low</option>
-                            <option value="Normal">Normal</option>
-                            <option value="High">High</option>
-                            <option value="Urgent">Urgent</option>
-                          </select>
-                        ) : (
-                          <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">{selectedLead.priority}</span>
-                        )}
+                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${priorityClass(selectedLead.priority)}`}>{prioKey(selectedLead.priority) || '—'}</span>
+                        <LeadScoreChip lead={selectedLead} winRate={winRates.get(String(selectedLead.source || '')) || 0} />
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -2608,6 +2341,17 @@ ${user.name || ''}`);
                           {selectedLead.slaDeadline ? formatLeadDateTime(selectedLead.slaDeadline) : 'Pending'}
                         </span>
                       </div>
+                      {(() => {
+                        const n = neglectInfo(selectedLead);
+                        if (n.state === 'na') return null;
+                        const bad = n.state === 'vip-breach' || n.state === 'neglected';
+                        return (
+                          <div className="sm:col-span-2">
+                            <span className="font-extrabold uppercase tracking-wider text-[9px] block opacity-70 mb-0.5">First-contact SLA (VIP 4h, others 48h):</span>
+                            <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${bad ? 'bg-red-200/60 text-red-800 border-red-300' : n.state === 'contacted' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-amber-100 text-amber-800 border-amber-200'}`}>{n.label}</span>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 );
@@ -2621,9 +2365,15 @@ ${user.name || ''}`);
                     <span className="font-bold text-xs">Warning: {duplicateWarnings.length} Potential Duplicate Records Detected!</span>
                   </div>
                   <p className="text-[10px] leading-relaxed">
-                    Other lead files exist with the identical phone number ({selectedLead.phoneNumber}). Consider merging these accounts.
+                    {duplicateWarnings.slice(0, 3).map(d => `${d.id} (${d.assignedSalespersonName || 'unrouted'})`).join(', ')}{duplicateWarnings.length > 3 ? ` +${duplicateWarnings.length - 3}` : ''} share the same phone number or e-mail with this lead.
                   </p>
                   <div className="flex gap-2 mt-1">
+                    <button
+                      onClick={() => setSelectedLead(duplicateWarnings[0])}
+                      className="bg-white border border-amber-300 text-amber-800 font-bold px-3 py-1 rounded text-[10px]"
+                    >
+                      Open {duplicateWarnings[0].id}
+                    </button>
                     <button
                       onClick={() => {
                         setPrimaryLeadMergeId(selectedLead.id);
@@ -2708,23 +2458,15 @@ ${user.name || ''}`);
                 </div>
               )}
 
-              {/* Status Update flow */}
-              {currentRole !== 'Read Only' && (
-                <div>
-                  <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block mb-2">Stage Status Progression</span>
-                  <div className="flex flex-wrap gap-1.5 bg-brand-gray/5 border border-brand-gray/15 p-2 rounded-xl">
-                    {(['New', 'Assigned', 'Contacted', 'Follow Up', 'Meeting Scheduled', 'Negotiation', 'Quotation Sent', 'Won', 'Lost'] as LeadStatus[]).map((st) => (
-                      <button
-                        key={st}
-                        onClick={() => handleDirectStatusChange(st)}
-                        className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all ${selectedLead.status === st ? 'bg-brand-red border-brand-red text-white' : 'bg-white border-brand-gray/25 text-brand-gray hover:text-brand-black'}`}
-                      >
-                        {st}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Lead form: status, follow-up, qualification, contact, deal stages (rules per spec) */}
+              <LeadEditor
+                lead={selectedLead}
+                auth={leadAuth}
+                actorName={user?.name || 'Agent'}
+                actorId={user ? String(user.id) : undefined}
+                onSaved={(u) => { setSelectedLead(u); onLeadsUpdated(); }}
+                onOpenLead={(id) => { const f = crmService.getLeads().find(x => x.id === id); if (f) setSelectedLead(f); }}
+              />
 
               {/* CRM Details Grid */}
               <div className="grid grid-cols-2 gap-4 bg-white border border-brand-gray/15 rounded-xl p-4">
@@ -2738,7 +2480,7 @@ ${user.name || ''}`);
                 </div>
                 <div>
                   <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Contact Number</span>
-                  <span className="font-mono text-brand-black font-bold text-xs">{selectedLead.phoneNumber}</span>
+                  <span className="font-mono text-brand-black font-bold text-xs">{phoneIntl(selectedLead.phoneNumber) || selectedLead.phoneNumber || '—'}</span>
                 </div>
                 <div>
                   <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer Email</span>
@@ -2907,6 +2649,9 @@ ${user.name || ''}`);
                 </div>
               </div>
 
+              {/* Server-written change history: owner, status, source, value, stage dates, cash */}
+              <LeadAuditHistory leadId={selectedLead.id} version={String((selectedLead as any)._rev || selectedLead.lastUpdated)} />
+
             </div>
           </motion.div>
         </>
@@ -3054,6 +2799,35 @@ ${user.name || ''}`);
         </div>
       )}
 
+      {/* -------------------- BULK WON: a deal value per lead -------------------- */}
+      {bulkWon && (
+        <div className="fixed inset-0 bg-brand-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white border border-brand-gray/20 rounded-2xl w-full max-w-2xl shadow-xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="p-5 border-b border-brand-gray/15 flex justify-between items-center bg-brand-black text-white">
+              <h4 className="font-bold text-sm uppercase tracking-wide">Mark {bulkWon.length} lead(s) as Won</h4>
+              <button onClick={() => setBulkWon(null)} className="text-white/60 hover:text-white"><X size={18} /></button>
+            </div>
+            <div className="p-5 text-xs space-y-3 overflow-y-auto">
+              <p className="text-[11px] text-brand-gray">Enter the cash value of each deal in EGP. A Won lead cannot be saved without it. Accounts receivable confirms the cash afterwards.</p>
+              {bulkWon.map((r, i) => (
+                <div key={r.id} className="grid grid-cols-5 items-center gap-3">
+                  <div className="col-span-3 truncate"><span className="font-mono font-bold text-brand-red mr-1.5">{r.id}</span>{r.name} <span className="text-brand-gray">· {r.project}</span></div>
+                  <input
+                    type="number" min={0} value={r.value} placeholder="Deal value (EGP)"
+                    onChange={(e) => setBulkWon(bulkWon.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))}
+                    className={`col-span-2 bg-brand-gray/5 border rounded-xl px-3 py-1.5 focus:outline-none ${Number(r.value) > 0 ? 'border-brand-gray/20' : 'border-rose-300'}`}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="p-4 border-t border-brand-gray/10 flex justify-end gap-2.5">
+              <button onClick={() => setBulkWon(null)} className="bg-brand-gray/10 hover:bg-brand-gray/20 text-brand-black px-4 py-2 rounded-xl font-bold text-xs">Cancel</button>
+              <button onClick={confirmBulkWon} disabled={bulkWon.some(r => !(Number(r.value) > 0))} className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white px-5 py-2 rounded-xl font-bold text-xs shadow">Mark as Won</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* -------------------- LOST REASON MODAL -------------------- */}
       {showLostModal && selectedLead && (
         <div className="fixed inset-0 bg-brand-black/50 backdrop-blur-xs flex items-center justify-center z-50 p-4">
@@ -3078,22 +2852,26 @@ ${user.name || ''}`);
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Lost Reason Category *</label>
+                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Lost Category *</label>
                 <select
-                  value={lostReason}
-                  onChange={(e) => setLostReason(e.target.value as LostReason)}
+                  value={lostCategory}
+                  onChange={(e) => setLostCategory(e.target.value)}
                   className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none"
                 >
-                  <option value="Not Interested">Not Interested</option>
-                  <option value="Price">Price</option>
-                  <option value="Competitor">Competitor</option>
-                  <option value="Location">Location</option>
-                  <option value="Budget">Budget Limit</option>
-                  <option value="Project Size">Project Size Mismatch</option>
-                  <option value="No Response">No Response / Uncontactable</option>
-                  <option value="Duplicate">Duplicate Lead</option>
-                  <option value="Cancelled">Cancelled</option>
-                  <option value="Other">Other</option>
+                  <option value="">Select...</option>
+                  {LOST_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Lost Reason *</label>
+                <select
+                  value={lostReasonTeam}
+                  onChange={(e) => setLostReasonTeam(e.target.value)}
+                  className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 text-xs focus:outline-none"
+                >
+                  <option value="">Select...</option>
+                  {LOST_REASONS_TEAM.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
 
@@ -3118,7 +2896,7 @@ ${user.name || ''}`);
                 </button>
                 <button
                   onClick={handleMarkAsLost}
-                  disabled={!lostComment.trim()}
+                  disabled={!lostComment.trim() || !lostCategory || !lostReasonTeam}
                   className="bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white px-5 py-2 rounded-xl font-bold shadow"
                 >
                   Confirm Lead Lost
@@ -3158,7 +2936,22 @@ ${user.name || ''}`);
               <div>
                 <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Recipient</label>
                 <div className="p-2.5 bg-brand-gray/5 border border-brand-gray/15 rounded-xl font-bold text-brand-black">
-                  {selectedLead.customerName} ({selectedLead.phoneNumber})
+                  {selectedLead.customerName} ({phoneIntl(selectedLead.phoneNumber) || selectedLead.phoneNumber})
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Template</label>
+                  <select value={waTemplate} onChange={(e) => pickWaTemplate(e.target.value)} className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none">
+                    {Object.keys(WA_TEMPLATES).map(k => <option key={k} value={k}>{k}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-bold text-brand-gray mb-1.5">Language</label>
+                  <select value={waLang} onChange={(e) => pickWaLang(e.target.value as WaLang)} className="w-full bg-brand-gray/5 border border-brand-gray/20 rounded-xl px-3 py-2 focus:outline-none">
+                    {(Object.keys(WA_LANGS) as WaLang[]).map(k => <option key={k} value={k}>{WA_LANGS[k]}</option>)}
+                  </select>
                 </div>
               </div>
 
