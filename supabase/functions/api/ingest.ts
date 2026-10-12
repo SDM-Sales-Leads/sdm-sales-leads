@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 // Lead ingestion from the sales mailbox: parse (Gemini, regex fallback) -> de-duplicate -> create -> route.
 import {
-  admin, asUuid, getConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
+  admin, pageAll, asUuid, getConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
 } from "./lib.ts";
 import { getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
 
@@ -234,7 +234,7 @@ export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name
   if (!pool.length) return null;
 
   const ids = pool.map((u: any) => u.id);
-  const { data: rows } = await admin.from("crm_leads").select("assigned_to,status,data,created_at").in("assigned_to", ids).is("deleted_at", null);
+  const rows = await pageAll((a, b) => admin.from("crm_leads").select("assigned_to,status,created_at,data->assignedDate").in("assigned_to", ids).is("deleted_at", null).order("id").range(a, b));
   const open: Record<string, number> = {};
   const total: Record<string, number> = {};
   const today: Record<string, number> = {};
@@ -243,7 +243,7 @@ export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name
     const k = r.assigned_to as string;
     total[k] = (total[k] || 0) + 1;
     if (!CLOSED.has(r.status || "")) open[k] = (open[k] || 0) + 1;
-    const ad = r.data?.assignedDate ? new Date(r.data.assignedDate) : new Date(r.created_at);
+    const ad = (r as any).assignedDate ? new Date((r as any).assignedDate) : new Date(r.created_at);
     if (ad >= day0) today[k] = (today[k] || 0) + 1;
   }
   const maxOpen = Number(q.maxLeadsPerSalesperson) || 0;

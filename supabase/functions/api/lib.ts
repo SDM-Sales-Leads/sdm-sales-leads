@@ -223,3 +223,18 @@ export function safeEqual(a: string, b: string): boolean {
   for (let i = 0; i < a.length; i++) r |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return r === 0;
 }
+
+/**
+ * The database answers at most 1000 rows per request, whatever .limit() says. This reads page after page
+ * (make(from,to) builds the query for one page) so lists with thousands of rows come back complete.
+ */
+export async function pageAll<T = any>(make: (from: number, to: number) => any, max = 50000): Promise<T[]> {
+  const rows: T[] = [];
+  for (let from = 0; from < max; from += 1000) {
+    const { data, error } = await make(from, from + 999);
+    if (error) throw new Error("page read failed");
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) break;
+  }
+  return rows;
+}

@@ -1,6 +1,6 @@
 // deno-lint-ignore-file no-explicit-any
 // Merged-in features of the previous CRM: cash confirmation (accounts receivable), the lead audit trail, owner linking.
-import { admin, bad, body, can, Caller, crmScope, forbidden, HttpError, logActivity, need, needAdmin, needCrm, nowIso, rateLimit, str } from "./lib.ts";
+import { admin, pageAll, bad, body, can, Caller, crmScope, forbidden, HttpError, logActivity, need, needAdmin, needCrm, nowIso, rateLimit, str } from "./lib.ts";
 import { route } from "./router.ts";
 
 async function teamIds(c: Caller): Promise<string[]> {
@@ -92,7 +92,7 @@ route("POST", "/crm/link-owners", async ({ c }) => {
 // names of imported owners that have no user yet (so the admin knows whom to create)
 route("GET", "/crm/unlinked-owners", async ({ c }) => {
   needAdmin(c);
-  const { data } = await admin.from("crm_leads").select("data").is("assigned_to", null).is("deleted_at", null).limit(10000);
+  const data = await pageAll((a, b) => admin.from("crm_leads").select("data").is("assigned_to", null).is("deleted_at", null).order("id").range(a, b));
   const m: Record<string, number> = {};
   for (const r of data || []) { const n = String(r.data?.legacyOwnerName || r.data?.assignedSalespersonName || "").trim(); if (n) m[n] = (m[n] || 0) + 1; }
   return Object.entries(m).map(([name, leads]) => ({ name, leads })).sort((a, b) => b.leads - a.leads);

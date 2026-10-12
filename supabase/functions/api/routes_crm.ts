@@ -5,7 +5,7 @@
 // `_rev` (the row's updated_at when it was loaded). A save is refused for a row that someone else changed since
 // (409-style "conflicts"), so two people can no longer overwrite each other. Deleting a lead is a soft delete.
 import {
-  admin, asUuid, bad, body, can, Caller, clean, crmScope, CrmScope, forbidden, getConfig, HttpError, isAdmin, isObj, logActivity, need,
+  admin, asUuid, bad, body, pageAll, can, Caller, clean, crmScope, CrmScope, forbidden, getConfig, HttpError, isAdmin, isObj, logActivity, need,
   needAdmin, needCrm, normEmail, normName, normPhone, nowIso, rateLimit, rid, setConfig, str,
 } from "./lib.ts";
 import { route } from "./router.ts";
@@ -103,21 +103,24 @@ for (const [name, spec] of Object.entries(SPECS)) {
     if (name === "email-logs" && !can(c, "canViewSalesMail") && crmScope(c) !== "all") throw forbidden();
     const scope = crmScope(c);
     const since = query.get("since");
-    let q: any = admin.from(spec.table).select("*");
     if (since && !isNaN(Date.parse(since))) {
       // delta: only rows changed after `since`, plus ids removed since then (cheap: one indexed query)
       const iso = new Date(since).toISOString();
-      const { data: ch } = await q.gt("updated_at", iso).order("updated_at", { ascending: true }).limit(5000);
+      const ch = await pageAll((a, b) => admin.from(spec.table).select("*").gt("updated_at", iso).order("updated_at", { ascending: true }).order("id").range(a, b), 20000).catch(() => { throw new HttpError(500, "Could not load " + name); });
       const team0 = scope === "team" ? await teamIds(c) : [];
       const live = (ch || []).filter((r: any) => !r.deleted_at && spec.owns(c, scope, team0, r)).map(out);
       const gone = (ch || []).filter((r: any) => r.deleted_at || !spec.owns(c, scope, team0, r)).map((r: any) => r.id);
       return { delta: true, rows: live, removed: gone, now: nowIso() };
     }
-    if (spec.soft) q = q.is("deleted_at", null);
-    if (name === "email-logs") q = q.order("received_at", { ascending: false, nullsFirst: false }).limit(500);
-    else q = q.order("created_at", { ascending: false }).limit(10000);
-    const { data, error } = await q;
-    if (error) throw new HttpError(500, "Could not load " + name);
+    let data: any[];
+    try {
+      data = await pageAll((a, b) => {
+        let p: any = admin.from(spec.table).select("*");
+        if (spec.soft) p = p.is("deleted_at", null);
+        p = name === "email-logs" ? p.order("received_at", { ascending: false, nullsFirst: false }).order("id") : p.order("created_at", { ascending: false }).order("id");
+        return p.range(a, name === "email-logs" ? Math.min(b, 499) : b);
+      }, name === "email-logs" ? 500 : 50000);
+    } catch { throw new HttpError(500, "Could not load " + name); }
     const team = scope === "team" ? await teamIds(c) : [];
     return (data || []).filter((r: any) => spec.owns(c, scope, team, r)).map(out);
   });

@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 // Tickets and workflow templates. Visibility, ids, SLA maths and step activation are decided HERE, not in the browser.
 import {
-  admin, asUuid, bad, body, can, Caller, clean, forbidden, HttpError, isAdmin, isManager, logActivity, need, notFound, nowIso, rateLimit,
+  admin, pageAll, asUuid, bad, body, can, Caller, clean, forbidden, HttpError, isAdmin, isManager, logActivity, need, notFound, nowIso, rateLimit,
   rid, str, isObj,
 } from "./lib.ts";
 import { route } from "./router.ts";
@@ -38,7 +38,7 @@ const cols = (d: any) => ({
 });
 
 route("GET", "/tickets", async ({ c }) => {
-  const { data } = await admin.from("tickets").select("*").order("id", { ascending: false }).limit(5000);
+  const data = await pageAll((a, b) => admin.from("tickets").select("*").order("id", { ascending: false }).range(a, b));
   return (data || []).filter((r: any) => canSeeTicket(c, r)).map(toTicket);
 });
 
