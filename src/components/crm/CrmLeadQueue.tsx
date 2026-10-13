@@ -528,9 +528,10 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
                         </span>
                       </div>
                       <h5 className="font-bold text-brand-black text-xs truncate mt-1">{log.subject}</h5>
+                      {(log as any).syncedAt && <p className="text-[10px] text-brand-gray mt-0.5">Synced {new Date((log as any).syncedAt).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' })}</p>}
                       <div className="flex justify-between items-center mt-2.5 pt-2 border-t border-brand-gray/10 text-[9px] font-bold">
                         <span className={isSuccess ? 'text-emerald-700' : isDeleted ? 'text-amber-600' : 'text-rose-600'}>
-                          {isSuccess ? 'STATUS: INGESTED' : isDeleted ? 'STATUS: DELETED' : 'STATUS: BLOCKED'}
+                          {isSuccess ? 'CREATED' : isDeleted ? 'DELETED' : log.status === 'Duplicate' ? 'DUPLICATE · NOT CREATED' : 'NOT CREATED'}
                         </span>
                         {isSuccess ? (
                           <button 

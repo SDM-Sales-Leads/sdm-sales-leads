@@ -357,6 +357,7 @@ export async function logMail(head: { id: string; receivedTime?: string; sender?
       sender: head.sender || "Unknown",
       subject: head.subject || "",
       status,
+      syncedAt: nowIso(),
       ...extra,
     },
   });
