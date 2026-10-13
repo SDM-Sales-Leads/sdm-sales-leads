@@ -374,6 +374,9 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
   const q = await loadQueue();
   const id = await nextId("lead");
   const now = nowIso();
+  // the lead is dated when the customer wrote (the e-mail / form time), not when somebody pressed Sync
+  const at = head.receivedTime && !isNaN(Date.parse(head.receivedTime)) && Date.parse(head.receivedTime) <= Date.now() + 60_000 ? new Date(head.receivedTime).toISOString() : now;
+  const atDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Cairo", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(at));
   const lead: any = {
     id,
     emailId: head.id,
@@ -389,14 +392,14 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
     priority: parsed.priority || "Medium",
     description: parsed.description,
     status: "New",
-    date: (head as any).leadDate || now.slice(0, 10),
+    date: (head as any).leadDate || atDate,
     expectedClosingDate: "",
     assignedSalespersonId: "",
     assignedSalespersonName: "Unassigned Queue",
     comments: [],
     attachments: [],
     timeline: [{
-      id: rid(), timestamp: now, type: "Creation", user: byUser || "System", title: "Lead Registered",
+      id: rid(), timestamp: at, type: "Creation", user: byUser || "System", title: "Lead Registered",
       description: `Lead registered from ${(head as any).origin || "the sales mailbox"}.`,
     }],
     lastUpdated: now,
