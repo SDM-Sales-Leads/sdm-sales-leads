@@ -167,6 +167,34 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
 
   const [simulationResult, setSimulationResult] = useState<{ success: boolean; leadId?: string; error?: string; isDuplicate?: boolean } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [logSrc, setLogSrc] = useState<'all' | 'mail' | 'sheet'>('all');
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetInfo, setSheetInfo] = useState<{ lastRun: string | null; lastTab: string | null; since: string | null } | null>(null);
+  const loadSheetInfo = () => { fetch('/api/crm/fb-sync/status').then((r) => (r.ok ? r.json() : null)).then((j) => { if (j) setSheetInfo(j); }).catch(() => {}); };
+  React.useEffect(loadSheetInfo, []);
+  const handleSyncSheet = async () => {
+    setSheetBusy(true); setSimulationResult(null); setSyncNotification(null);
+    setSyncStatus('Reading the Facebook leads Google Sheet…');
+    try {
+      let created = 0, dups = 0, failed = 0, left = 0; const leads: { id: string; name: string }[] = [];
+      for (let round = 0; round < 10; round++) {
+        const res = await fetch('/api/crm/fb-sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const part = await res.json();
+        if (!res.ok || part.success === false) throw new Error(part.error || 'Could not read the sheet');
+        if (part.fbSkipped) { setSyncStatus('Another sheet sync is already running. Try again in a moment.'); return; }
+        if (part.fbError) throw new Error(part.fbError);
+        created += part.fbNew || 0; dups += part.fbDuplicates || 0; failed += part.fbFailed || 0; left = part.fbRemaining || 0;
+        leads.push(...(part.fbLeads || []));
+        setSyncStatus(`Reading the Google Sheet… ${created} new lead(s) so far`);
+        if (!left) break;
+      }
+      if (created > 0) { setSyncStatus(''); setSyncNotification({ count: created, leads }); setTimeout(() => setSyncNotification(null), 15000); }
+      else setSyncStatus(`Google Sheet synced. No new leads (${dups} duplicate, ${failed} could not be read).`);
+      if (left > 0) setSyncStatus((x) => `${x || ''} ${left} more are waiting. Press the button again.`.trim());
+      loadSheetInfo(); onLogsUpdated();
+    } catch (e: any) { setSyncStatus(`Sheet sync failed: ${e?.message || 'unknown error'}`); }
+    finally { setSheetBusy(false); }
+  };
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
   const handleOpenLead = (id: string) => {
@@ -273,7 +301,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
               <Mail className="text-brand-red shrink-0" size={18} />
               <span className="truncate max-w-full block break-all">Sales mailbox</span>
             </h4>
-            <p className="text-xs text-brand-gray mt-1">Direct IMAP/SMTP connection monitor.</p>
+            <p className="text-xs text-brand-gray mt-1">Direct IMAP/SMTP connection monitor.{sheetInfo?.lastRun ? ` Google Sheet last synced ${new Date(sheetInfo.lastRun).toLocaleString()}${sheetInfo.lastTab ? ` (tab ${sheetInfo.lastTab})` : ''}.` : ' Google Sheet not synced yet.'}</p>
           </div>
           <div className="flex items-center gap-3 w-full sm:w-auto shrink-0">
              <button
@@ -283,6 +311,14 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
               >
                 {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
                 <span>SYNC INBOX NOW</span>
+              </button>
+             <button
+                onClick={handleSyncSheet}
+                disabled={sheetBusy}
+                className="w-full sm:w-auto justify-center bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-2 transition-all disabled:opacity-60"
+              >
+                {sheetBusy ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+                <span>SYNC GOOGLE SHEET</span>
               </button>
           </div>
         </div>
@@ -444,6 +480,11 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
             </div>
 
             
+            <div className="flex gap-1.5">
+              {([['all', 'All'], ['mail', 'E-mails'], ['sheet', 'Google Sheet']] as const).map(([k, l]) => (
+                <button key={k} onClick={() => setLogSrc(k)} className={`px-3 py-1 rounded-full text-[11px] font-bold border transition-all ${logSrc === k ? 'bg-brand-black text-white border-brand-black' : 'bg-white text-brand-gray border-brand-gray/20 hover:border-brand-gray/40'}`}>{l}</button>
+              ))}
+            </div>
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-gray" size={14} />
               <input
@@ -459,6 +500,9 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
               {(() => {
                 const seenLogIds = new Set<string>();
                 const uniqueLogs = filteredLogs.filter(log => {
+                  const isSheet = String(log.sender || '').startsWith('Facebook Leads');
+                  if (logSrc === 'sheet' && !isSheet) return false;
+                  if (logSrc === 'mail' && isSheet) return false;
                   if (!log.id) return true;
                   if (seenLogIds.has(log.id)) return false;
                   seenLogIds.add(log.id);
@@ -480,7 +524,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
                         <span className="truncate max-w-[150px]">{log.sender}</span>
                         <span className="font-mono flex items-center gap-1">
                           <Clock size={10} />
-                          {new Date(log.receivedTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {new Date(log.receivedTime).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                         </span>
                       </div>
                       <h5 className="font-bold text-brand-black text-xs truncate mt-1">{log.subject}</h5>

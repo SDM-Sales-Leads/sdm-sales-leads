@@ -268,12 +268,23 @@ export function safeEqual(a: string, b: string): boolean {
  * (make(from,to) builds the query for one page) so lists with thousands of rows come back complete.
  */
 export async function pageAll<T = any>(make: (from: number, to: number) => any, max = 50000): Promise<T[]> {
-  const rows: T[] = [];
-  for (let from = 0; from < max; from += 1000) {
+  // the first page decides; if it is full, the next pages are read in parallel waves (was one page after another)
+  const WAVE = 4;
+  const read = async (from: number): Promise<T[]> => {
     const { data, error } = await make(from, from + 999);
     if (error) throw new Error("page read failed");
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
+    return (data || []) as T[];
+  };
+  const rows: T[] = await read(0);
+  let from = 1000;
+  while (rows.length === from && from < max) {
+    const starts: number[] = [];
+    for (let i = 0; i < WAVE && from + i * 1000 < max; i++) starts.push(from + i * 1000);
+    const pages = await Promise.all(starts.map(read));
+    let short = false;
+    for (const pg of pages) { rows.push(...pg); if (pg.length < 1000) short = true; }
+    if (short) break;
+    from += starts.length * 1000;
   }
   return rows;
 }

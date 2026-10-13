@@ -10,6 +10,7 @@ import "./routes_bd.ts";
 import "./integration.ts";
 import { route } from "./router.ts";
 import { ingestInbox } from "./ingest.ts";
+import { syncFacebook } from "./fbsheet.ts";
 
 declare const Deno: any;
 
@@ -21,7 +22,9 @@ route("POST", "/cron/ingest", async ({ req }) => {
   if (!want || !safeEqual(given, want)) throw new HttpError(401, "Not allowed");
   const { data } = await admin.from("system_config").select("value").eq("key", "ingest_auto").maybeSingle();
   if (data?.value !== true) return { skipped: true, reason: "automatic ingestion is off" };
-  return await ingestInbox(25, "Scheduled run");
+  const m = await ingestInbox(25, "Scheduled run");
+  const fb = await syncFacebook({ byUser: "Scheduled run" }).catch(() => ({ fbNew: 0 }));
+  return { ...m, ...fb };
 }, { public: true });
 
 Deno.serve(async (req: Request) => {

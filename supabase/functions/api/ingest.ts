@@ -30,7 +30,7 @@ export const DEFAULT_QUEUE = {
 export const SALES_ROLES = ["Sales Rep", "Sales Representative", "Sales Team", "Sales Team Leader"];
 const CLOSED = new Set(["Won", "Lost", "Duplicate", "Invalid", "Not Interested", "Closed"]);
 const PRIORITIES = ["Urgent", "High", "Normal", "Low"];
-const SUBJECT_HINTS = ["sales lead", "inquiry", "enquiry", "contact", "form", "lead", "request"];
+const SUBJECT_HINTS = ["sales lead", "inquiry", "enquiry", "contact", "form", "lead", "request", "new submission", "plan your visit"];
 
 export const subjectLooksLikeLead = (s: string) => {
   const l = (s || "").toLowerCase();
@@ -155,7 +155,39 @@ EMAIL>>>`;
   return null;
 }
 
+/**
+ * The website form ("New submission from Plan your visit", sent by web@elsewedydevelopment.com): every field is a label
+ * on its own line with the value on the next line(s). Read it exactly, no AI needed. Returns null for any other mail.
+ */
+export function parseWebsiteForm(text: string): Parsed | null {
+  if (!/new submission from/i.test(text || "") && !/\bPlan your visit\b/i.test(text || "")) return null;
+  const LABELS: Record<string, string> = {
+    "name": "name", "job title": "job", "company": "company", "country": "country", "email address": "email", "email": "email",
+    "phone": "phone", "project of interest": "project", "required land size": "size", "inquiry": "inquiry",
+  };
+  const v: Record<string, string> = {};
+  let cur = "";
+  for (const raw of (text || "").split(/\r?\n/)) {
+    const line = raw.replace(/\s+/g, " ").trim();
+    if (!line) continue;
+    const key = LABELS[line.toLowerCase().replace(/:$/, "")];
+    if (key && !(key in v)) { cur = key; v[key] = ""; continue; }
+    if (cur) v[cur] = (v[cur] ? v[cur] + " " : "") + line;
+  }
+  if (!v.name && !v.phone) return null;
+  const desc = [
+    v.job ? `Job title: ${v.job}` : "", v.country ? `Country: ${v.country}` : "", v.size ? `Land size wanted: ${v.size}` : "",
+    v.inquiry ? `Inquiry: ${v.inquiry}` : "",
+  ].filter(Boolean).join("\n");
+  return sanitizeParsed({
+    customerName: v.name || "", phoneNumber: (v.phone || "").replace(/\s+/g, ""), email: v.email || "", companyName: v.company || "",
+    project: v.project || "", plotType: "", requiredSize: v.size || "", budget: "", priority: "Medium", source: "Website", description: desc,
+  });
+}
+
 export async function parseMail(text: string, queue: any): Promise<{ parsed: Parsed; by: "ai" | "regex" }> {
+  const web = parseWebsiteForm(text);
+  if (web && (web.customerName || web.phoneNumber)) return { parsed: web, by: "regex" };
   const ai = await aiParse(text, queue.canonicalProjects || [], queue.canonicalLeadSources || []);
   if (ai && (ai.customerName || ai.phoneNumber)) return { parsed: ai, by: "ai" };
   return { parsed: regexParse(text), by: "regex" };
@@ -315,7 +347,7 @@ export async function findDuplicate(parsed: Parsed): Promise<{ id: string; delet
   return data && data[0] ? { id: data[0].id, deleted: !!data[0].deleted_at } : null;
 }
 
-async function logMail(head: { id: string; receivedTime?: string; sender?: string; subject?: string }, status: string, extra: Record<string, any> = {}) {
+export async function logMail(head: { id: string; receivedTime?: string; sender?: string; subject?: string }, status: string, extra: Record<string, any> = {}) {
   await admin.from("crm_email_logs").upsert({
     id: head.id,
     received_at: head.receivedTime || nowIso(),
@@ -353,11 +385,11 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
     requiredSize: parsed.requiredSize ?? "",
     budget: parsed.budget ?? undefined,
     source: parsed.source || "",
-    channel: channelFromMail(head),
+    channel: (head as any).channel ?? channelFromMail(head),
     priority: parsed.priority || "Medium",
     description: parsed.description,
     status: "New",
-    date: now.slice(0, 10),
+    date: (head as any).leadDate || now.slice(0, 10),
     expectedClosingDate: "",
     assignedSalespersonId: "",
     assignedSalespersonName: "Unassigned Queue",
@@ -365,7 +397,7 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
     attachments: [],
     timeline: [{
       id: rid(), timestamp: now, type: "Creation", user: byUser || "System", title: "Lead Registered",
-      description: "Lead registered from the sales mailbox.",
+      description: `Lead registered from ${(head as any).origin || "the sales mailbox"}.`,
     }],
     lastUpdated: now,
   };

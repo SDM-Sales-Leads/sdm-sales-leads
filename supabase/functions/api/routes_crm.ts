@@ -4,6 +4,7 @@
 // Saving model: the browser sends { upserts: [rows], deletes: [ids] } — only what changed. Every row carries
 // `_rev` (the row's updated_at when it was loaded). A save is refused for a row that someone else changed since
 // (409-style "conflicts"), so two people can no longer overwrite each other. Deleting a lead is a soft delete.
+import { syncFacebook } from "./fbsheet.ts";
 import {
   admin, asUuid, bad, body, pageAll, can, Caller, clean, crmScope, CrmScope, forbidden, getConfig, HttpError, isAdmin, isObj, logActivity, need,
   needAdmin, needCrm, normEmail, normName, normPhone, nowIso, rateLimit, rid, setConfig, str,
@@ -31,6 +32,8 @@ export interface Spec {
   cols: (d: any, c: Caller) => Record<string, any>;
   /** may this caller see/write the row? */
   owns: (c: Caller, scope: CrmScope, team: string[], row: any) => boolean;
+  /** optional: the same rule as a database filter, so a rep's list is not read in full and then cut down */
+  narrow?: (c: Caller, scope: CrmScope, team: string[]) => ((q: any) => any) | null;
   canWrite?: (c: Caller, scope: CrmScope) => boolean;
   canDelete: (c: Caller, scope: CrmScope) => boolean;
 }
@@ -41,6 +44,8 @@ export const SPECS: Record<string, Spec> = {
     cols: (d) => leadColumns(d),
     owns: (c, scope, team, r) => scope === "all" || scope === "viewall" || (scope === "finance" ? r.status === "Won" : r.assigned_to === c.id || r.created_by === c.id || (scope === "team" && !!r.assigned_to && team.includes(r.assigned_to))),
     canDelete: (_c, scope) => scope === "all" || scope === "team",
+    narrow: (c, scope, team) => scope === "all" || scope === "viewall" ? null : scope === "finance" ? (q) => q.eq("status", "Won")
+      : (q) => q.or([`assigned_to.eq.${c.id}`, `created_by.eq.${c.id}`, ...(scope === "team" && team.length ? [`assigned_to.in.(${team.join(",")})`] : [])].join(",")),
   },
   contacts: {
     table: "crm_contacts", soft: true,
@@ -107,22 +112,24 @@ for (const [name, spec] of Object.entries(SPECS)) {
     if (since && !isNaN(Date.parse(since))) {
       // delta: only rows changed after `since`, plus ids removed since then (cheap: one indexed query)
       const iso = new Date(since).toISOString();
-      const ch = await pageAll((a, b) => admin.from(spec.table).select("*").gt("updated_at", iso).order("updated_at", { ascending: true }).order("id").range(a, b), 20000).catch(() => { throw new HttpError(500, "Could not load " + name); });
       const team0 = scope === "team" ? await teamIds(c) : [];
+      const ch = await pageAll((a, b) => admin.from(spec.table).select("*").gt("updated_at", iso).order("updated_at", { ascending: true }).order("id").range(a, b), 20000).catch(() => { throw new HttpError(500, "Could not load " + name); });
       const live = (ch || []).filter((r: any) => !r.deleted_at && spec.owns(c, scope, team0, r)).map(out);
       const gone = (ch || []).filter((r: any) => r.deleted_at || !spec.owns(c, scope, team0, r)).map((r: any) => r.id);
       return { delta: true, rows: live, removed: gone, now: nowIso() };
     }
     let data: any[];
+    const team = scope === "team" ? await teamIds(c) : [];
+    const nar = spec.narrow?.(c, scope, team) || null;
     try {
       data = await pageAll((a, b) => {
         let p: any = admin.from(spec.table).select("*");
+        if (nar) p = nar(p);
         if (spec.soft) p = p.is("deleted_at", null);
         p = name === "email-logs" ? p.order("received_at", { ascending: false, nullsFirst: false }).order("id") : p.order("created_at", { ascending: false }).order("id");
         return p.range(a, name === "email-logs" ? Math.min(b, 499) : b);
       }, name === "email-logs" ? 500 : 50000);
     } catch { throw new HttpError(500, "Could not load " + name); }
-    const team = scope === "team" ? await teamIds(c) : [];
     return (data || []).filter((r: any) => spec.owns(c, scope, team, r)).map(out);
   });
 
@@ -368,6 +375,23 @@ async function runIngest(c: Caller) {
   await logActivity(c, "Mail Ingestion", `${r.newLeadsCount} new lead(s) from ${r.processed} mail(s)`, "system");
   return { success: true, messages: [], ...r };
 }
+// Facebook leads sheet: the same people who may read the mailbox may sync it; only an administrator can set a back-fill date
+route("POST", "/crm/fb-sync", async ({ req, c }) => {
+  needCrm(c);
+  if (!(can(c, "canViewSalesMail") || crmScope(c) === "all")) throw forbidden();
+  await rateLimit(`fbsync:${c.id}`, 3600, 60);
+  const b = await body(req, 10_000);
+  const since = crmScope(c) === "all" && b.since && !isNaN(Date.parse(b.since)) ? new Date(b.since).toISOString() : undefined;
+  const r: any = await syncFacebook({ since, byUser: c.name });
+  if (r.fbNew) await logActivity(c, "Facebook Sheet Sync", `${r.fbNew} new lead(s) from the Facebook sheet`, "system");
+  return { success: true, ...r };
+});
+route("GET", "/crm/fb-sync/status", async ({ c }) => {
+  needCrm(c);
+  if (!(can(c, "canViewSalesMail") || crmScope(c) === "all")) throw forbidden();
+  const cfg = await getConfig<any>("fb_sheet", {});
+  return { enabled: cfg.enabled !== false, lastRun: cfg.lastRun || null, lastTab: cfg.lastTab || null, since: cfg.since || null };
+});
 route("POST", "/crm/trigger-auto-sync", async ({ c }) => { needCrm(c); return await runIngest(c); });
 // one-time tidy-up of leads that came from e-mail: remove the signature / disclaimer from the description and set the channel
 route("POST", "/crm/fix-mail-leads", async ({ c }) => {

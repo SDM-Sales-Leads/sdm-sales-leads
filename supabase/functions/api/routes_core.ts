@@ -619,3 +619,11 @@ route("POST", "/notify", async ({ req, c }) => {
     throw new HttpError(502, "Failed to send email");
   }
 });
+
+// every browser error is written to the activity log with the short code the user sees on screen, so a screenshot can be traced
+route("POST", "/client-error", async ({ req, c }) => {
+  await rateLimit(`clierr:${c.id}`, 3600, 40);
+  const b = await body(req, 8000);
+  await logActivity(c, "Client error", `[${str(b.id, 12)}] ${str(b.kind, 12)}: ${str(b.message, 300)} | ${str(b.url, 140)}`, "error");
+  return { ok: true };
+});
