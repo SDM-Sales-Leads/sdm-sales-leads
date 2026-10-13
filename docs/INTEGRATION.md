@@ -6,7 +6,7 @@ own Supabase access token to Sales Leads, and Sales Leads asks the Land Bank aut
 
 | | Sales Leads (CRM) | Land Bank |
 |---|---|---|
-| Site | https://sdm-sales-leads.github.io/sdm-sales-leads/ | https://sdm-land-bank.github.io/ |
+| Site | https://sdm-sales-leads.github.io/ | https://sdm-land-bank.github.io/ |
 | Supabase | https://iyubegbevtjcvtuubpaq.supabase.co (edge function `api`, base `/functions/v1/api`) | https://ihjlvxmttvjcciafruya.supabase.co (publishable key `sb_publishable_8Q-O8l1q58PmM8kQkEETDQ_g1wwmRbS`) |
 
 ## 1. Who is calling (Land Bank -> Sales Leads)
