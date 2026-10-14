@@ -118,7 +118,8 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
     try {
       const allUsers = await adminService.getUsers();
       const crmSalesPeople = allUsers
-        .filter((u: any) => u.role === 'Sales Team' || u.role === 'Sales Rep' || u.role === 'Sales Team Leader' || u.role === 'Sales Operation')
+        .filter((u: any) => u.role === 'Sales Team' || u.role === 'Sales Rep' || u.role === 'Sales Team Leader' || u.role === 'Sales Operation'
+          || (String(u.role || '').toLowerCase().includes('admin') && String(u.id) === String(user?.id)))   // an admin can assign leads to himself
         .map((u: any) => ({
           id: String(u.id), name: u.name, email: u.email || '', role: u.role || 'Sales Rep',
           activeLeads: u.activeLeads || 0, totalLeads: u.totalLeads || 0, leave: u.leave || false,
