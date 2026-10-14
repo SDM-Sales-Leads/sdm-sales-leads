@@ -24,8 +24,8 @@ export const NotificationBell: React.FC<{ dark?: boolean; className?: string }> 
   const btn = useRef<HTMLButtonElement>(null);
   const busy = useRef(false);
 
-  const load = useCallback(async () => {
-    if (busy.current || document.hidden) return;
+  const load = useCallback(async (force = false) => {
+    if (busy.current || (document.hidden && !force)) return;     // background polling pauses while the tab is hidden; opening the panel and the first load always read
     busy.current = true;
     try {
       const res = await fetch('/api/crm/my-notifications?limit=40');
@@ -37,8 +37,8 @@ export const NotificationBell: React.FC<{ dark?: boolean; className?: string }> 
   }, []);
 
   useEffect(() => {
-    void load();
-    const t = setInterval(load, 60_000);                       // one tiny request a minute, only while the tab is visible
+    void load(true);
+    const t = setInterval(() => void load(), 60_000);                       // one tiny request a minute, only while the tab is visible
     const f = () => void load();
     window.addEventListener('focus', f);
     window.addEventListener('crm-notify-refresh', f);
@@ -50,7 +50,7 @@ export const NotificationBell: React.FC<{ dark?: boolean; className?: string }> 
       const r = btn.current.getBoundingClientRect();
       const w = Math.min(400, window.innerWidth - 16);
       setPos({ left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)), top: r.bottom + 8 });
-      void load();
+      void load(true);
     }
     setOpen(!open);
   };
