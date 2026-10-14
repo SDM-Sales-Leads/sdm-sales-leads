@@ -149,7 +149,7 @@ export function trendOf(pool: P[], r: Range, allTime: boolean, today: string, un
 // ---------------------------------------------------------------------------------------------
 // Win / loss
 // ---------------------------------------------------------------------------------------------
-export interface LostRow { key: string; n: number; value: number; withValue: number; area: number  ids?: string[]; }
+export interface LostRow { key: string; n: number; value: number; withValue: number; area: number; ids?: string[] }
 export function lostAnalysis(pool: P[]) {
   const reasons = new Map<string, LostRow>(); const stage = [0, 0, 0, 0, 0, 0]; const owners = new Map<string, { key: string; n: number }>();
   let lost = 0;
