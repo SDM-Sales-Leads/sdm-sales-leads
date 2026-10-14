@@ -430,7 +430,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className={`p-4 border-t border-white/10 transition-all ${isCollapsed ? 'flex flex-col items-center' : ''} relative`}>
           <div className={`flex items-center gap-3 mb-4 ${isCollapsed ? 'justify-center' : 'px-2'}`}>
-            <button hidden
+            <button style={{ display: 'none' }}
               onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
               className="w-10 h-10 rounded-full bg-brand-red flex items-center justify-center font-bold text-lg flex-shrink-0 shadow-lg relative cursor-pointer hover:opacity-90 transition-opacity"
               title="Toggle Notifications"
