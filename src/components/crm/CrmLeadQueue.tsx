@@ -167,6 +167,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
 
   const [simulationResult, setSimulationResult] = useState<{ success: boolean; leadId?: string; error?: string; isDuplicate?: boolean } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [progress, setProgress] = useState<{ label: string; done: number; total: number; eta: string } | null>(null);
   const [openBadge, setOpenBadge] = useState<string | null>(null);
   React.useEffect(() => { void crmService.reloadEmailLogs().then(() => onLogsUpdated()); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   const [logSrc, setLogSrc] = useState<'all' | 'mail' | 'sheet'>('all');
@@ -232,11 +233,13 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
   const handleSyncInbox = async () => {
     setIsSyncing(true);
     setSyncStatus('Reading the mailbox...');
+    setProgress({ label: 'Reading the mailbox', done: 0, total: 0, eta: 'estimating the time…' });
     setSimulationResult(null);
     setSyncNotification(null);
     try {
       // one click reads the whole mailbox: the server takes 25 e-mails per call, so keep asking until none are left
       const data: any = { success: true, newLeadsCount: 0, processed: 0, duplicates: 0, failed: 0, leads: [], remaining: 0 };
+      const t0 = Date.now(); let rounds = 0;
       for (let round = 0; round < 12; round++) {
         const res = await fetch('/api/crm/trigger-auto-sync', { method: 'POST' });
         const part = await res.json();
@@ -245,7 +248,12 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
         data.newLeadsCount += part.newLeadsCount || 0; data.processed += part.processed || 0;
         data.duplicates += part.duplicates || 0; data.failed += part.failed || 0;
         data.leads.push(...(part.leads || [])); data.remaining = part.remaining || 0;
-        setSyncStatus(`Reading the mailbox… ${data.processed} e-mails checked, ${data.newLeadsCount} new leads so far`);
+        rounds++;
+        const total = data.processed + (part.remaining || 0);
+        const per = (Date.now() - t0) / rounds;                                   // average time of one round
+        const left = Math.ceil((part.remaining || 0) / Math.max(1, (part.processed || 1))) * per;
+        setProgress({ label: 'Reading the mailbox', done: data.processed, total, eta: left > 0 ? `about ${left < 60000 ? Math.max(5, Math.round(left / 1000)) + ' seconds' : Math.round(left / 60000) + ' min'} left` : 'almost done' });
+        setSyncStatus(`Reading the mailbox… ${data.processed} of ${total} e-mails checked, ${data.newLeadsCount} new leads so far`);
         if (!part.remaining) break;
       }
 
@@ -274,8 +282,10 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
       }
       if (data.remaining > 0) setSyncStatus((s) => `${s || ''} ${data.remaining} more e-mails are waiting. Press Sync again.`.trim());
       await crmService.reloadEmailLogs(); await crmService.refreshDelta({ force: true, kinds: ['leads'] });
+      setProgress(null);
       onLogsUpdated();
     } catch (e: any) {
+      setProgress(null);
       setSyncStatus('Error: ' + e.message);
     } finally {
       setIsSyncing(false);
@@ -344,6 +354,12 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
               <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500"></span>
             </span>
             <span className="truncate">{syncStatus}</span>
+          </div>
+        )}
+        {progress && (
+          <div className="px-1">
+            <div className="h-2.5 rounded-full bg-indigo-100 overflow-hidden"><div className="h-full bg-indigo-600 transition-all duration-500" style={{ width: `${Math.min(100, Math.round((progress.done / Math.max(1, progress.total)) * 100))}%` }} /></div>
+            <p className="text-[11px] font-bold text-indigo-800 mt-1">{progress.total ? `${progress.label}: ${progress.done} of ${progress.total} (${Math.min(100, Math.round((progress.done / Math.max(1, progress.total)) * 100))}%) · ${progress.eta}` : `${progress.label}… ${progress.eta}`}</p>
           </div>
         )}
 

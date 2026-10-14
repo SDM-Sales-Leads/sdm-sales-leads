@@ -148,28 +148,29 @@ export async function getBody(cfg: EwsConfig, id: string): Promise<{ html: strin
   };
 }
 
-/** bodies of several mails in ONE request (8 per call). Returns id -> body; ids it could not read are left out. */
+/** bodies of several mails: 8 per request, up to 3 requests at the same time. Returns id -> body; unreadable ids are left out. */
 export async function getBodies(cfg: EwsConfig, ids: string[]): Promise<Map<string, { html: string; subject: string }>> {
   const out = new Map<string, { html: string; subject: string }>();
   const ok = ids.filter((id) => /^[A-Za-z0-9+/=_-]{20,600}$/.test(id));
-  for (let i = 0; i < ok.length; i += 8) {
-    const chunk = ok.slice(i, i + 8);
+  const chunks: string[][] = [];
+  for (let i = 0; i < ok.length; i += 8) chunks.push(ok.slice(i, i + 8));
+  const doChunk = async (chunk: string[]) => {
     try {
       const xml = await call(cfg, envelope(`<m:GetItem>
       <m:ItemShape><t:BaseShape>Default</t:BaseShape><t:IncludeMimeContent>false</t:IncludeMimeContent><t:BodyType>HTML</t:BodyType></m:ItemShape>
       <m:ItemIds>${chunk.map((id) => `<t:ItemId Id="${escXml(id)}" />`).join("")}</m:ItemIds>
     </m:GetItem>`));
-      const msgs = xml.split(/<m:GetItemResponseMessage /).slice(1);
-      msgs.forEach((m, k) => {
+      xml.split(/<m:GetItemResponseMessage /).slice(1).forEach((m, k) => {
         const b = m.match(/<t:Body[^>]*>([\s\S]*?)<\/t:Body>/);
         out.set(chunk[k], { html: b ? xmlDecode(b[1]) : "", subject: xmlDecode(m.match(/<t:Subject>([\s\S]*?)<\/t:Subject>/)?.[1] || "") });
       });
     } catch (e) {
-      // one bad mail must not hide the rest: read this chunk one by one (call() throws on a single error response)
+      // a refused sign-in or a server error stops everything; a single bad mail only costs this chunk (read it one by one)
       if (e instanceof HttpError && /rejected|HTTP 4|HTTP 5/.test(e.message)) throw e;
       for (const id of chunk) { try { out.set(id, await getBody(cfg, id)); } catch { /* left out */ } }
     }
-  }
+  };
+  for (let i = 0; i < chunks.length; i += 3) await Promise.all(chunks.slice(i, i + 3).map(doChunk));
   return out;
 }
 

@@ -371,7 +371,7 @@ route("POST", "/crm/reparse-lead", async ({ req, c }) => {
 async function runIngest(c: Caller) {
   if (!(can(c, "canViewSalesMail") || crmScope(c) === "all")) throw forbidden();
   await rateLimit(`ingest:${c.id}`, 3600, 30);
-  const r = await ingestInbox(25, c.name);
+  const r = await ingestInbox(40, c.name);
   await logActivity(c, "Mail Ingestion", `${r.newLeadsCount} new lead(s) from ${r.processed} mail(s)`, "system");
   return { success: true, messages: [], ...r };
 }
