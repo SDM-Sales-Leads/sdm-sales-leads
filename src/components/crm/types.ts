@@ -68,6 +68,7 @@ export interface AssignedPlot {
 }
 
 export interface Lead {
+  createdBy?: string;               // who registered the lead (a person, or the mailbox / sheet sync)
   /** plots chosen for this lead (Land Bank keys, max 20) and how the salesperson prefers to pick them */
   assignedPlots?: AssignedPlot[];
   plotMode?: 'recommend' | 'manual';

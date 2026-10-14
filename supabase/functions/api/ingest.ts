@@ -392,6 +392,7 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
   const lead: any = {
     id,
     emailId: head.id,
+    createdBy: (head as any).channel === "Facebook Leads" ? "Facebook sheet sync" : "Mailbox sync",
     customerName: parsed.customerName,
     phoneNumber: parsed.phoneNumber,
     email: parsed.email,

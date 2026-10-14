@@ -426,6 +426,7 @@ export const crmService = {
     const newLead: Lead = {
       ...leadData,            // the team's extra fields (phone 2, industry, nationality, qualification, ...)
       id: newId,
+      createdBy: (leadData as any).createdBy || createdBy,     // who registered it (for the Marketing report)
       emailId: leadData.emailId,
       date: leadData.date || new Date().toISOString(),
       source: leadData.source || 'Manual Entry',
