@@ -1,5 +1,6 @@
 // Team Performance: one row per salesperson, leaderboard and a detail drawer. For sales managers / team leaders;
 // a salesperson only ever sees their own row (the server only sends them their own leads).
+import { crmNav } from './crmNav';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Trophy, X } from 'lucide-react';
 import { useAuth } from '../../services/AuthContext';
@@ -85,12 +86,21 @@ export const CrmTeamPerformance: React.FC<Partial<CrmTeamPerformanceProps> & { l
   }, [rows]);
 
   const selected = sel ? rows.find((r) => r.id === sel) || null : null;
+  // a number in the table opens the leads list with exactly the leads behind it (same period and filters)
+  const numLink = (r: RepPerf, what: string, value: number, pred: (p: (typeof pool)[number]) => boolean, tone = '') => {
+    if (!value) return num(value);
+    const ids = pool.filter((p) => p.owner === r.id && pred(p)).map((p) => String(p.l.id));
+    return (
+      <button type="button" className={`font-mono underline decoration-dotted underline-offset-2 hover:text-brand-red ${tone}`} title="Click to open these leads"
+        onClick={(e) => { e.stopPropagation(); crmNav.leads({ ids, title: `${r.name} · ${what} · ${range.label}${ids.length !== value ? ` (table says ${value})` : ''}` }); }}>{num(value)}</button>
+    );
+  };
   const cols: Column<RepPerf>[] = [
     { id: 'n', head: 'Salesperson', sort: (r) => r.name, cell: (r) => <span className="font-bold whitespace-nowrap">{r.name}</span> },
-    { id: 'leads', head: 'Leads', info: 'Leads of this person in the period: lead date in the window, or a deal won in the window.', right: true, sort: (r) => r.leads, cell: (r) => num(r.leads) },
-    { id: 'open', head: 'Open', info: 'Of those leads, still open (not won, lost or closed).', right: true, sort: (r) => r.open, cell: (r) => num(r.open) },
-    { id: 'won', head: 'Won', info: 'Deals with a closing date in the window.', right: true, sort: (r) => r.won, cell: (r) => <span className="text-emerald-700">{num(r.won)}</span> },
-    { id: 'lost', head: 'Lost', info: 'Lost, Not Interested and Low Budget leads of the period.', right: true, sort: (r) => r.lost, cell: (r) => num(r.lost) },
+    { id: 'leads', head: 'Leads', info: 'Leads of this person in the period: lead date in the window, or a deal won in the window.', right: true, sort: (r) => r.leads, cell: (r) => numLink(r, 'Leads', r.leads, () => true) },
+    { id: 'open', head: 'Open', info: 'Of those leads, still open (not won, lost or closed).', right: true, sort: (r) => r.open, cell: (r) => numLink(r, 'Open leads', r.open, (p) => p.open) },
+    { id: 'won', head: 'Won', info: 'Deals with a closing date in the window.', right: true, sort: (r) => r.won, cell: (r) => numLink(r, 'Won', r.won, (p) => p.won, 'text-emerald-700') },
+    { id: 'lost', head: 'Lost', info: 'Lost, Not Interested and Low Budget leads of the period.', right: true, sort: (r) => r.lost, cell: (r) => numLink(r, 'Lost', r.lost, (p) => p.lost) },
     { id: 'conv', head: 'Conversion', info: 'Won ÷ leads.', right: true, sort: (r) => r.conversion, cell: (r) => <Pill v={r.conversion} good={5} ok={1} dp={1} /> },
     { id: 'val', head: 'Won value', right: true, sort: (r) => (r.wonWithValue ? r.wonValue : null), cell: (r) => (r.wonWithValue ? fmtEGP(r.wonValue) : '—') },
     { id: 'fa', head: 'Avg first action', info: 'Average time from getting the lead (assignment) to the first call, note or status change. See the definition at the bottom of the page. "—" = not measurable.', right: true, sort: (r) => r.avgFirstH, cell: (r) => fmtHours(r.avgFirstH) },

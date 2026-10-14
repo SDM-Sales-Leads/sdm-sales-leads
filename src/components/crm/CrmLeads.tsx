@@ -214,6 +214,8 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   const [showFilters, setShowFilters] = useState(false);
   const [xf, setXf] = useState<XF>(EMPTY_XF);
   const [savedView, setSavedView] = useState<string>('All');
+  // a clicked number elsewhere (dashboard tile, chart bar...) opens this list with exactly the leads that number counted
+  const [idPreset, setIdPreset] = useState<{ ids: Set<string>; title: string } | null>(null);
 
   // Column management
   const [visibleColumns, setVisibleColumns] = useState<string[]>(['id', 'date', 'customer', 'project', 'size', 'slaStatus', 'priority', 'score', 'status', 'assigned', 'channel', 'leadSource']);
@@ -393,7 +395,28 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     clearSearch();
     setXf(EMPTY_XF);
     setSavedView('All');
+    setIdPreset(null);
   };
+  useEffect(() => {
+    const apply = () => {
+      let raw: string | null = null;
+      try { raw = localStorage.getItem('crm_leads_preset'); localStorage.removeItem('crm_leads_preset'); } catch { /* ignore */ }
+      if (!raw) return;
+      try {
+        const p = JSON.parse(raw);
+        resetFilters();
+        if (Array.isArray(p.ids)) setIdPreset({ ids: new Set(p.ids.map(String)), title: String(p.title || 'Selected leads') });
+        if (p.status) setFilterStatus(p.status);
+        if (p.project) setFilterProject(p.project);
+        if (p.source) setFilterSource(p.source);
+        if (p.salesperson) setFilterSalesperson(p.salesperson);
+        if (p.search) { setSearchInput(p.search); setSearchTerm(p.search); }
+      } catch { /* ignore */ }
+    };
+    apply();
+    window.addEventListener('crm-leads-preset', apply);
+    return () => window.removeEventListener('crm-leads-preset', apply);
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // Saved Views Loader
   const handleSavedViewChange = (view: string) => {
@@ -453,6 +476,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
           if (l.assignedSalespersonId && l.assignedSalespersonId !== myId && !teamIds.has(String(l.assignedSalespersonId))) return false;
         }
       }
+      if (idPreset && !idPreset.ids.has(String(l.id))) return false;
       if (filterStatus === 'OpenLeads') { if (!isOpenStatus(l.status)) return false; }
       else if (filterStatus !== 'All' && l.status !== filterStatus) return false;
       if (filterProject !== 'All' && l.project !== filterProject) return false;
@@ -496,10 +520,10 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     });
     return keyed.map((x) => x.l);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, salespeople, leads, searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, winRates, sortField, sortDirection]);
+  }, [user, salespeople, leads, searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, winRates, sortField, sortDirection, idPreset]);
 
   // back to the first page whenever the result set changes shape
-  useEffect(() => { setPage(0); setKanbanCap({}); setCalDay(null); }, [searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, sortField, sortDirection]);
+  useEffect(() => { setPage(0); setKanbanCap({}); setCalDay(null); }, [searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, sortField, sortDirection, idPreset]);
 
   // Project List
   const projects = useMemo(() => {
@@ -534,8 +558,9 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     if (filterSource !== 'All') out.push({ key: 'source', label: `Source: ${filterSource}`, onClear: () => setFilterSource('All') });
     if (filterSalesperson !== 'All') out.push({ key: 'owner', label: `Owner: ${filterSalesperson === 'Unassigned' ? 'Unassigned' : filterSalesperson}`, onClear: () => setFilterSalesperson('All') });
     for (const c of xfChips(xf)) out.push({ key: c.key, label: c.label, onClear: () => setXf((x) => c.clear(x)) });
+    if (idPreset) out.push({ key: 'ids', label: `${idPreset.title} · ${idPreset.ids.size} leads`, onClear: () => setIdPreset(null) });
     return out;
-  }, [filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, xf]);
+  }, [filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, xf, idPreset]);
 
   // Sources list
   const sources = useMemo(() => {

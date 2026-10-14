@@ -64,6 +64,20 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
   const activeSubTab = propActiveSubTab || localActiveSubTab;
   const setActiveSubTab = propSetActiveSubTab || localSetActiveSubTab;
 
+  // a number or ID clicked on any screen (see crmNav.ts): jump to the record or to the filtered list
+  useEffect(() => {
+    const go = (e: Event) => {
+      const d: any = (e as CustomEvent).detail || {};
+      try {
+        if (d.kind === 'lead') { localStorage.setItem('selected_lead_id', d.id); localStorage.setItem('crm_selected_lead_id_from_notification', d.id); setActiveSubTab('leads'); setTimeout(() => window.dispatchEvent(new CustomEvent('crm-select-lead', { detail: { leadId: d.id } })), 60); }
+        else if (d.kind === 'customer') { localStorage.setItem('selected_contact_id', d.id); setActiveSubTab('contacts'); setTimeout(() => window.dispatchEvent(new Event('crm-open-contact')), 60); }
+        else if (d.kind === 'leads') { localStorage.setItem('crm_leads_preset', JSON.stringify(d.preset || {})); setActiveSubTab('leads'); setTimeout(() => window.dispatchEvent(new Event('crm-leads-preset')), 60); }
+      } catch { /* ignore */ }
+    };
+    window.addEventListener('crm-nav', go);
+    return () => window.removeEventListener('crm-nav', go);
+  }, [setActiveSubTab]);
+
   const [leads, setLeads] = useState<Lead[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);

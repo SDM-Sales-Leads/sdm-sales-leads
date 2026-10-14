@@ -1,3 +1,4 @@
+import { crmNav } from './crmNav';
 import React, { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Lead, TimelineEvent } from './types';
@@ -300,7 +301,7 @@ export const CrmDuplicates: React.FC<Props> = ({ leads, onLeadsUpdated, currentR
                     return (
                       <tr key={l.id} className="border-t border-brand-gray/10">
                         <td className="px-4 py-2">
-                          <span className="font-mono text-brand-black">{l.id}</span>{' '}
+                          <button type="button" className="font-mono underline decoration-dotted underline-offset-2 hover:text-brand-red" title="Open this lead" onClick={() => crmNav.lead(l.id)}>{l.id}</button>{' '}
                           {l.id === win.lead.id && <span className="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-extrabold">KEEP: {win.why}</span>}
                           <div className="text-brand-gray">{l.customerName}{l.companyName ? ` · ${l.companyName}` : ''}</div>
                         </td>

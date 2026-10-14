@@ -45,7 +45,7 @@ export const Delta: React.FC<{ now: number | null; prev: number | null | undefin
 };
 
 export const Kpi: React.FC<{ label: string; value: React.ReactNode; sub?: React.ReactNode; info: React.ReactNode; delta?: React.ReactNode; tone?: string; onClick?: () => void }> = ({ label, value, sub, info, delta, tone = 'text-brand-black', onClick }) => (
-  <div onClick={onClick} className={`bg-white border border-brand-gray/20 rounded-2xl p-4 shadow-sm ${onClick ? 'cursor-pointer hover:border-brand-red/40' : ''}`}>
+  <div onClick={onClick} title={onClick ? 'Click to open these leads' : undefined} className={`bg-white border border-brand-gray/20 rounded-2xl p-4 shadow-sm ${onClick ? 'cursor-pointer hover:border-brand-red/40' : ''}`}>
     <div className="flex items-center justify-between gap-1">
       <span className="text-[10px] uppercase font-bold text-brand-gray tracking-wider">{label}</span>
       <InfoTip text={info} />

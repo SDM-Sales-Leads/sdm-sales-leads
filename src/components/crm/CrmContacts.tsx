@@ -540,8 +540,9 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
     status: 'Active' as 'Active' | 'Inactive'
   });
 
-  // Cross-link hooks: open a contact's Customer 360 from other screens
+  // Cross-link hooks: open a contact's Customer 360 from other screens (also when the screen is already open)
   useEffect(() => {
+    const open = () => {
     let id: string | null = null, phone: string | null = null;
     try { id = localStorage.getItem('selected_contact_id'); phone = localStorage.getItem('selected_crm_contact_phone'); } catch { /* ignore */ }
     if (!id && !phone) return;
@@ -550,6 +551,10 @@ export const CrmContacts: React.FC<CrmContactsProps> = ({
     if (found || contacts.length) {
       try { localStorage.removeItem('selected_contact_id'); localStorage.removeItem('selected_crm_contact_phone'); } catch { /* ignore */ }
     }
+    };
+    open();
+    window.addEventListener('crm-open-contact', open);
+    return () => window.removeEventListener('crm-open-contact', open);
   }, [contacts]);
 
   // Escape closes any open window

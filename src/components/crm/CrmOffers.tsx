@@ -1,3 +1,4 @@
+import { crmNav } from './crmNav';
 import React, { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { AlertCircle, CheckCircle, FileText, Phone, Plus, Printer, Search, XCircle } from 'lucide-react';
@@ -165,7 +166,7 @@ export const CrmOffers: React.FC<CrmOffersProps> = ({ leads, onLeadsUpdated, set
           <input autoFocus className="input-field" placeholder="Type at least 2 characters" value={pickQ} onChange={(e) => setPickQ(e.target.value)} />
           {candidates.map((l) => (
             <div key={l.id} className="flex items-center justify-between gap-3 border-t border-black/5 pt-2">
-              <div className="text-sm"><b>{l.customerName || '—'}</b> <span className="text-brand-gray">{l.companyName} · {l.id} · {l.project || '—'} · {l.status}</span></div>
+              <div className="text-sm"><b>{l.customerName || '—'}</b> <span className="text-brand-gray">{l.companyName} · <button type="button" className="font-mono underline decoration-dotted underline-offset-2 hover:text-brand-red" title="Open this lead" onClick={() => crmNav.lead(l.id)}>{l.id}</button> · {l.project || '—'} · {l.status}</span></div>
               <button onClick={() => markSent(l)} className="px-3 py-1.5 rounded-lg bg-brand-red text-white text-xs font-bold">Mark sent</button>
             </div>
           ))}
@@ -195,7 +196,7 @@ export const CrmOffers: React.FC<CrmOffersProps> = ({ leads, onLeadsUpdated, set
             {visible.map(({ l, due, overdue, dueToday }) => (
               <tr key={l.id} className={overdue ? 'bg-red-50/60' : ''}>
                 <td className="p-3"><button onClick={() => openLead(l)} className="text-left hover:underline"><b>{l.customerName || '—'}</b></button>
-                  <div className="text-xs text-brand-gray">{l.companyName ? `${l.companyName} · ` : ''}{l.id}{l.phoneNumber ? <> · <Phone size={10} className="inline" /> {l.phoneNumber}</> : ''}</div></td>
+                  <div className="text-xs text-brand-gray">{l.companyName ? `${l.companyName} · ` : ''}<button type="button" className="font-mono underline decoration-dotted underline-offset-2 hover:text-brand-red" title="Open this lead" onClick={() => crmNav.lead(l.id)}>{l.id}</button>{l.phoneNumber ? <> · <Phone size={10} className="inline" /> {l.phoneNumber}</> : ''}</div></td>
                 <td className="p-3">{l.project || '—'}</td>
                 <td className="p-3">{l.assignedSalespersonName || '—'}</td>
                 <td className="p-3 whitespace-nowrap">{dayOf(l.offerDate) || '—'}</td>
