@@ -231,7 +231,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
 
   const handleSyncInbox = async () => {
     setIsSyncing(true);
-    setSyncStatus('Connecting to IMAP server & synchronizing...');
+    setSyncStatus('Reading the mailbox...');
     setSimulationResult(null);
     setSyncNotification(null);
     try {

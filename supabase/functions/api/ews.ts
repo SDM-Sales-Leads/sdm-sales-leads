@@ -148,6 +148,31 @@ export async function getBody(cfg: EwsConfig, id: string): Promise<{ html: strin
   };
 }
 
+/** bodies of several mails in ONE request (8 per call). Returns id -> body; ids it could not read are left out. */
+export async function getBodies(cfg: EwsConfig, ids: string[]): Promise<Map<string, { html: string; subject: string }>> {
+  const out = new Map<string, { html: string; subject: string }>();
+  const ok = ids.filter((id) => /^[A-Za-z0-9+/=_-]{20,600}$/.test(id));
+  for (let i = 0; i < ok.length; i += 8) {
+    const chunk = ok.slice(i, i + 8);
+    try {
+      const xml = await call(cfg, envelope(`<m:GetItem>
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape><t:IncludeMimeContent>false</t:IncludeMimeContent><t:BodyType>HTML</t:BodyType></m:ItemShape>
+      <m:ItemIds>${chunk.map((id) => `<t:ItemId Id="${escXml(id)}" />`).join("")}</m:ItemIds>
+    </m:GetItem>`));
+      const msgs = xml.split(/<m:GetItemResponseMessage /).slice(1);
+      msgs.forEach((m, k) => {
+        const b = m.match(/<t:Body[^>]*>([\s\S]*?)<\/t:Body>/);
+        out.set(chunk[k], { html: b ? xmlDecode(b[1]) : "", subject: xmlDecode(m.match(/<t:Subject>([\s\S]*?)<\/t:Subject>/)?.[1] || "") });
+      });
+    } catch (e) {
+      // one bad mail must not hide the rest: read this chunk one by one (call() throws on a single error response)
+      if (e instanceof HttpError && /rejected|HTTP 4|HTTP 5/.test(e.message)) throw e;
+      for (const id of chunk) { try { out.set(id, await getBody(cfg, id)); } catch { /* left out */ } }
+    }
+  }
+  return out;
+}
+
 // readable text from an HTML mail body (for parsing)
 export function htmlToText(html: string): string {
   if (!html) return "";

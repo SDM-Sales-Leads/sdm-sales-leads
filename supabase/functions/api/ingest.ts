@@ -4,7 +4,7 @@ import {
   admin, pageAll, asUuid, getConfig, setConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
 } from "./lib.ts";
 import { canonicalPark } from "./parks.ts";
-import { getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
+import { getBodies, getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
 
 export const DEFAULT_QUEUE = {
   assignmentMethod: "Round Robin",
@@ -451,25 +451,44 @@ export async function ingestInbox(max = 25, byUser?: string) {
 
     let created = 0, processed = 0, dups = 0, failed = 0;
     const leads: { id: string; name: string }[] = [];
-    for (const head of todo.slice(0, max)) {
-      processed++;
+    const batch = todo.slice(0, max);
+    const bodies = await getBodies(cfg, batch.map((h) => h.id));   // 8 mails per mail-server request instead of one each
+    // phase 1, all mails at once: read the text, parse it, look for a duplicate (no writes yet)
+    const prep = await Promise.all(batch.map(async (head) => {
       try {
-        const body = await getBody(cfg, head.id);
+        const body = bodies.get(head.id) || await getBody(cfg, head.id);
         const text = body.html ? htmlToText(body.html) : head.bodyPreview;
         const { parsed } = await parseMail(text, queue);
         const base = { id: head.id, receivedTime: head.receivedTime, sender: head.senderAddress || head.sender, subject: head.subject, bodyPreview: text.slice(0, 4000) };
+        const dup = parsed.customerName || parsed.phoneNumber ? await findDuplicate(parsed) : null;
+        return { head, text, parsed, base, dup, err: "" };
+      } catch (e: any) {
+        return { head, text: "", parsed: null as any, base: null as any, dup: null, err: e instanceof HttpError ? e.message : "Unexpected error while reading this mail" };
+      }
+    }));
+    // phase 2, one after the other (routing needs the running counts): create the leads and write the history
+    const batchPhones = new Map<string, string>(), batchEmails = new Map<string, string>();
+    for (const r of prep) {
+      processed++;
+      const { head, text, parsed, base } = r;
+      try {
+        if (r.err) { await logMail({ id: head.id, receivedTime: head.receivedTime, sender: head.senderAddress, subject: head.subject }, "Failed", { bodyPreview: head.bodyPreview, error: r.err }); failed++; continue; }
         if (!parsed.customerName && !parsed.phoneNumber) {
           await logMail(base, "Failed", { ...base, error: "Could not find a customer name or phone number" });
           failed++;
           continue;
         }
-        const dup = await findDuplicate(parsed);
-        if (dup) {
-          await logMail(base, "Duplicate", { ...base, parsedLeadId: dup.id, error: dup.deleted ? "Skipped: matches a lead that was deleted on purpose" : `Duplicate of ${dup.id}` });
+        const ph = normPhone(parsed.phoneNumber), em = normEmail(parsed.email);
+        const sameBatch = (ph && batchPhones.get(ph)) || (em && batchEmails.get(em)) || "";   // two mails of the same person in one run
+        const dupId = r.dup ? r.dup.id : sameBatch;
+        if (dupId) {
+          await logMail(base, "Duplicate", { ...base, parsedLeadId: dupId, error: r.dup?.deleted ? "Skipped: matches a lead that was deleted on purpose" : `Duplicate of ${dupId}` });
           dups++;
           continue;
         }
         const lead = await createLeadFromParsed(parsed, head, text, byUser);
+        if (ph) batchPhones.set(ph, lead.id);
+        if (em) batchEmails.set(em, lead.id);
         await logMail(base, "Success", { ...base, parsedLeadId: lead.id });
         created++;
         leads.push({ id: lead.id, name: parsed.customerName || parsed.phoneNumber || "" });
