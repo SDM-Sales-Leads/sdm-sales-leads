@@ -159,17 +159,23 @@ EMAIL>>>`;
  * The website form ("New submission from Plan your visit", sent by web@elsewedydevelopment.com): every field is a label
  * on its own line with the value on the next line(s). Read it exactly, no AI needed. Returns null for any other mail.
  */
-export function parseWebsiteForm(text: string): Parsed | null {
-  if (!/new submission from/i.test(text || "") && !/\bPlan your visit\b/i.test(text || "")) return null;
+export function parseWebsiteForm(text: string, subject = ""): Parsed | null {
+  // the subject is not part of the mail body: recognise the form by its subject, or by its labels each standing on its own line
+  const t0 = text || "";
+  const labelLine = (l: string) => new RegExp(`(^|\\n)\\s*${l}\\s*(\\n|$)`, "i").test(t0);
+  const byLabels = labelLine("Name") && labelLine("Email address") && labelLine("Phone") && (labelLine("Job Title") || labelLine("Company"));
+  if (!/new submission from/i.test(subject) && !/new submission from/i.test(t0) && !byLabels) return null;
   const LABELS: Record<string, string> = {
     "name": "name", "job title": "job", "company": "company", "country": "country", "email address": "email", "email": "email",
-    "phone": "phone", "project of interest": "project", "required land size": "size", "inquiry": "inquiry",
+    "phone": "phone", "project of interest": "project", "select industrial city": "project", "industrial city": "project",
+    "required land size": "size", "inquiry": "inquiry", "message": "inquiry",
   };
   const v: Record<string, string> = {};
   let cur = "";
   for (const raw of (text || "").split(/\r?\n/)) {
     const line = raw.replace(/\s+/g, " ").trim();
     if (!line) continue;
+    if (/^(This email was scanned by|Disclaimer|CAUTION)/i.test(line)) { cur = ""; continue; }   // footer of the mail, not part of the last answer
     const key = LABELS[line.toLowerCase().replace(/:$/, "")];
     if (key && !(key in v)) { cur = key; v[key] = ""; continue; }
     if (cur) v[cur] = (v[cur] ? v[cur] + " " : "") + line;
@@ -185,8 +191,8 @@ export function parseWebsiteForm(text: string): Parsed | null {
   });
 }
 
-export async function parseMail(text: string, queue: any): Promise<{ parsed: Parsed; by: "ai" | "regex" }> {
-  const web = parseWebsiteForm(text);
+export async function parseMail(text: string, queue: any, subject = ""): Promise<{ parsed: Parsed; by: "ai" | "regex" }> {
+  const web = parseWebsiteForm(text, subject);
   if (web && (web.customerName || web.phoneNumber)) return { parsed: web, by: "regex" };
   const ai = await aiParse(text, queue.canonicalProjects || [], queue.canonicalLeadSources || []);
   if (ai && (ai.customerName || ai.phoneNumber)) return { parsed: ai, by: "ai" };
@@ -492,7 +498,7 @@ export async function ingestInbox(max = 25, byUser?: string) {
       try {
         const body = bodies.get(head.id) || await getBody(cfg, head.id);
         const text = body.html ? htmlToText(body.html) : head.bodyPreview;
-        const { parsed } = await parseMail(text, queue);
+        const { parsed } = await parseMail(text, queue, head.subject);
         const base = { id: head.id, receivedTime: head.receivedTime, sender: head.senderAddress || head.sender, subject: head.subject, bodyPreview: text.slice(0, 4000) };
         const dup = parsed.customerName || parsed.phoneNumber ? await findDuplicate(parsed) : null;
         return { head, text, parsed, base, dup, err: "" };

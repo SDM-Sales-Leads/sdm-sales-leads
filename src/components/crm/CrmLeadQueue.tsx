@@ -200,16 +200,16 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
   };
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
-  const mailStatus = (email: any): { ok: boolean; text: string; leadId?: string } => {
+  const mailStatus = (email: any): { ok: boolean; text: string; leadId?: string; kind?: 'warn' } => {
     const lead = leads.find((l: any) => (l as any).emailId && (l as any).emailId === email.id);
     if (lead) return { ok: true, text: `Synced: lead ${lead.id} was created from this e-mail.`, leadId: lead.id };
     const log: any = logs.find((l: any) => l.id === email.id);
     if (log?.status === 'Success' && log.parsedLeadId) return { ok: true, text: `Synced: lead ${log.parsedLeadId} was created from this e-mail.`, leadId: log.parsedLeadId };
-    if (log?.status === 'Duplicate') return { ok: false, text: `Not created: ${log.error || 'duplicate of an existing lead'}`, leadId: log.parsedLeadId };
+    if (log?.status === 'Duplicate') return { ok: false, kind: 'warn', text: `Not created: ${log.error || 'duplicate of an existing lead'}`, leadId: log.parsedLeadId };
     if (log) return { ok: false, text: `Not created: ${log.error || log.status}` };
     const subj = String(email.subject || '').toLowerCase();
     if (!['sales lead', 'inquiry', 'enquiry', 'contact', 'form', 'lead', 'request', 'new submission', 'plan your visit'].some((h) => subj.includes(h)))
-      return { ok: false, text: 'Skipped: the subject does not look like a lead e-mail, so Sync ignores it.' };
+      return { ok: false, kind: 'warn', text: 'Skipped: the subject does not look like a lead e-mail, so Sync ignores it.' };
     return { ok: false, text: 'Not synced yet. Press SYNC INBOX NOW.' };
   };
   const handleOpenLead = (id: string) => {
@@ -417,11 +417,11 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
                         const st = mailStatus(email);
                         return (
                           <div className="mt-2" onClick={(e) => e.stopPropagation()}>
-                            <button onClick={() => setOpenBadge(openBadge === email.id ? null : email.id)} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${st.ok ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'}`}>
-                              {st.ok ? '● SYNCED' : '● NOT SYNCED'}
+                            <button onClick={() => setOpenBadge(openBadge === email.id ? null : email.id)} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${st.ok ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : st.kind === 'warn' ? 'bg-amber-50 text-amber-700 border-amber-300' : 'bg-rose-50 text-rose-700 border-rose-300'}`}>
+                              {st.ok ? '● SYNCED' : st.kind === 'warn' ? (st.leadId ? '● DUPLICATE' : '● SKIPPED') : '● NOT SYNCED'}
                             </button>
                             {openBadge === email.id && (
-                              <div className={`mt-1.5 text-[11px] rounded-lg p-2 border ${st.ok ? 'bg-emerald-50/60 border-emerald-200' : 'bg-rose-50/60 border-rose-200'}`}>
+                              <div className={`mt-1.5 text-[11px] rounded-lg p-2 border ${st.ok ? 'bg-emerald-50/60 border-emerald-200' : st.kind === 'warn' ? 'bg-amber-50/60 border-amber-200' : 'bg-rose-50/60 border-rose-200'}`}>
                                 <p>{st.text}</p>
                                 {st.leadId && <button onClick={() => handleOpenLead(st.leadId!)} className="mt-1 text-indigo-600 hover:underline font-mono font-bold">Open lead {st.leadId} →</button>}
                               </div>

@@ -44,6 +44,8 @@ export const CrmImportExport: React.FC<CrmImportExportProps> = ({ leads, onLeads
   // Only Sales Operation / admin may import with owners; everyone else imports to themselves (the server enforces the same)
   const canOwners = roleLc.includes('admin') || roleLc.startsWith('sales operation');
   const scopeAll = canOwners || permissions?.canViewSalesRules === true;
+  // marketing feeds the sales team: what they import is not owned by them, it goes through the routing rules like e-mail leads
+  const leaveUnassigned = !canOwners && permissions?.canEditLeadIdentity === true;
 
   const [dragActive, setDragActive] = useState(false);
   const [phase, setPhase] = useState<Phase>('idle');
@@ -69,7 +71,7 @@ export const CrmImportExport: React.FC<CrmImportExportProps> = ({ leads, onLeads
     const s = sheetRef.current!;
     const label = user?.name || 'User';
     return buildPlan(s.headers, s.body, {
-      existing: crmService.getLeads(), people: people(), canOwners, scopeAll,
+      existing: crmService.getLeads(), people: people(), canOwners, scopeAll, leaveUnassigned,
       me: { id: String(user?.id ?? ''), name: label }, userLabel: label, fileName: name,
       today: new Date().toISOString().slice(0, 10), dupMode, updateExisting: upd,
     }, (done, total) => setProg({ done, total, label: 'Checking rows' }));
@@ -159,6 +161,7 @@ export const CrmImportExport: React.FC<CrmImportExportProps> = ({ leads, onLeads
       const current = crmService.getLeads();
       crmService.saveLeads([...newLeads, ...current.map((l) => upd.get(l.id) || l)]);
       await crmService.whenSaved();
+      if (leaveUnassigned) for (const id of newIds) crmService.routeLeadAutomatically(id);
       const after = new Map(crmService.getLeads().map((l) => [l.id, l]));
       for (const r of part) {
         if (r.kind === 'update') {
@@ -256,6 +259,7 @@ export const CrmImportExport: React.FC<CrmImportExportProps> = ({ leads, onLeads
               <p className="text-brand-gray font-semibold leading-relaxed">
                 {canOwners
                   ? 'The "Assigned To" column is matched to your team by name. Names that match nobody (or several people) stay unassigned and are listed for you.'
+                  : leaveUnassigned ? 'Leads you import go to the sales team through the routing rules (the owner is set by the Routing page, like e-mail leads). The owner, source, phone, e-mail, lead date and priority of existing leads cannot be changed by an import.'
                   : 'Leads you import are assigned to you. The owner, source, phone, e-mail, lead date and priority of existing leads cannot be changed by an import.'}
               </p>
               <div

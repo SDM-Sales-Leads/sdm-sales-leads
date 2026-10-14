@@ -281,6 +281,7 @@ export interface PlanCtx {
   people: Person[];
   canOwners: boolean;                  // Sales Operation / admin
   scopeAll: boolean;                   // same, as far as the browser can tell (Won / protected fields)
+  leaveUnassigned?: boolean;           // marketing: imported leads go to the routing queue, not to the person importing
   me: { id: string; name: string };
   userLabel: string;
   fileName: string;
@@ -448,8 +449,8 @@ export async function buildPlan(headers: string[], body: string[][], ctx: PlanCt
         else row.owner = 'blank';
       }
     } else {
-      assignee = { id: ctx.me.id, name: ctx.me.name };
-      row.owner = 'self';
+      if (ctx.leaveUnassigned) row.owner = 'blank';
+      else { assignee = { id: ctx.me.id, name: ctx.me.name }; row.owner = 'self'; }
     }
 
     // status
