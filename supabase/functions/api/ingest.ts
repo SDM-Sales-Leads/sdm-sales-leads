@@ -1,7 +1,7 @@
 // deno-lint-ignore-file no-explicit-any
 // Lead ingestion from the sales mailbox: parse (Gemini, regex fallback) -> de-duplicate -> create -> route.
 import {
-  admin, pageAll, asUuid, getConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
+  admin, pageAll, asUuid, getConfig, setConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
 } from "./lib.ts";
 import { canonicalPark } from "./parks.ts";
 import { getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
@@ -425,9 +425,20 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
 export async function ingestInbox(max = 25, byUser?: string) {
   if (!(await tryLock("ingest", 150))) return { newLeadsCount: 0, processed: 0, remaining: 0, skipped: true };
   try {
+    // after a mail-server error the mailbox is left alone for 20 minutes: repeated failed sign-ins can lock the account
+    const pause = await getConfig<any>("ews_pause", {});
+    if (pause.until && Date.parse(pause.until) > Date.now()) {
+      const at = new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit" }).format(new Date(pause.until));
+      throw new HttpError(429, `The mailbox is resting after an error (${pause.reason || "mail server"}). It is tried again after ${at} Cairo time, so the account is not locked.`);
+    }
     const cfg = await loadEws();
     const queue = await loadQueue();
-    const heads = (await listFolder(cfg, "inbox", 100)).filter((h) => subjectLooksLikeLead(h.subject));
+    let heads: MailHead[];
+    try { heads = (await listFolder(cfg, "inbox", 100)).filter((h) => subjectLooksLikeLead(h.subject)); }
+    catch (e: any) {
+      if (e instanceof HttpError && /mail server/i.test(e.message)) await setConfig("ews_pause", { until: new Date(Date.now() + 20 * 60_000).toISOString(), reason: e.message.slice(0, 120) });
+      throw e;
+    }
     if (!heads.length) return { newLeadsCount: 0, processed: 0, remaining: 0 };
 
     const ids = heads.map((h) => h.id);

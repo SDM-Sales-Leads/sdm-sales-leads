@@ -167,6 +167,8 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
 
   const [simulationResult, setSimulationResult] = useState<{ success: boolean; leadId?: string; error?: string; isDuplicate?: boolean } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [openBadge, setOpenBadge] = useState<string | null>(null);
+  React.useEffect(() => { void crmService.reloadEmailLogs().then(() => onLogsUpdated()); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
   const [logSrc, setLogSrc] = useState<'all' | 'mail' | 'sheet'>('all');
   const [sheetBusy, setSheetBusy] = useState(false);
   const [sheetInfo, setSheetInfo] = useState<{ lastRun: string | null; lastTab: string | null; since: string | null } | null>(null);
@@ -191,12 +193,24 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
       if (created > 0) { setSyncStatus(''); setSyncNotification({ count: created, leads }); setTimeout(() => setSyncNotification(null), 15000); }
       else setSyncStatus(`Google Sheet synced. No new leads (${dups} duplicate, ${failed} could not be read).`);
       if (left > 0) setSyncStatus((x) => `${x || ''} ${left} more are waiting. Press the button again.`.trim());
-      loadSheetInfo(); onLogsUpdated();
+      loadSheetInfo(); await crmService.reloadEmailLogs(); await crmService.refreshDelta({ force: true, kinds: ['leads'] }); onLogsUpdated();
     } catch (e: any) { setSyncStatus(`Sheet sync failed: ${e?.message || 'unknown error'}`); }
     finally { setSheetBusy(false); }
   };
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
+  const mailStatus = (email: any): { ok: boolean; text: string; leadId?: string } => {
+    const lead = leads.find((l: any) => (l as any).emailId && (l as any).emailId === email.id);
+    if (lead) return { ok: true, text: `Synced: lead ${lead.id} was created from this e-mail.`, leadId: lead.id };
+    const log: any = logs.find((l: any) => l.id === email.id);
+    if (log?.status === 'Success' && log.parsedLeadId) return { ok: true, text: `Synced: lead ${log.parsedLeadId} was created from this e-mail.`, leadId: log.parsedLeadId };
+    if (log?.status === 'Duplicate') return { ok: false, text: `Not created: ${log.error || 'duplicate of an existing lead'}`, leadId: log.parsedLeadId };
+    if (log) return { ok: false, text: `Not created: ${log.error || log.status}` };
+    const subj = String(email.subject || '').toLowerCase();
+    if (!['sales lead', 'inquiry', 'enquiry', 'contact', 'form', 'lead', 'request', 'new submission', 'plan your visit'].some((h) => subj.includes(h)))
+      return { ok: false, text: 'Skipped: the subject does not look like a lead e-mail, so Sync ignores it.' };
+    return { ok: false, text: 'Not synced yet. Press SYNC INBOX NOW.' };
+  };
   const handleOpenLead = (id: string) => {
     localStorage.setItem('selected_lead_id', id);
     if (setActiveSubTab) {
@@ -259,7 +273,7 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
         setSyncStatus(`Sync complete. Checked ${checked} new e-mail(s): no new leads (${data.duplicates || 0} duplicate, ${data.failed || 0} could not be read).`);
       }
       if (data.remaining > 0) setSyncStatus((s) => `${s || ''} ${data.remaining} more e-mails are waiting. Press Sync again.`.trim());
-      
+      await crmService.reloadEmailLogs(); await crmService.refreshDelta({ force: true, kinds: ['leads'] });
       onLogsUpdated();
     } catch (e: any) {
       setSyncStatus('Error: ' + e.message);
@@ -383,6 +397,22 @@ export const CrmLeadQueue: React.FC<CrmLeadQueueProps> = ({ logs, leads, onLogsU
                       </div>
                       <div className="text-xs font-semibold text-brand-black truncate">{email.subject}</div>
                       <div className="text-[10px] text-brand-gray truncate mt-1">{email.bodyPreview}</div>
+                      {webmailTab === 'inbox' && (() => {
+                        const st = mailStatus(email);
+                        return (
+                          <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+                            <button onClick={() => setOpenBadge(openBadge === email.id ? null : email.id)} className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${st.ok ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-rose-50 text-rose-700 border-rose-300'}`}>
+                              {st.ok ? '● SYNCED' : '● NOT SYNCED'}
+                            </button>
+                            {openBadge === email.id && (
+                              <div className={`mt-1.5 text-[11px] rounded-lg p-2 border ${st.ok ? 'bg-emerald-50/60 border-emerald-200' : 'bg-rose-50/60 border-rose-200'}`}>
+                                <p>{st.text}</p>
+                                {st.leadId && <button onClick={() => handleOpenLead(st.leadId!)} className="mt-1 text-indigo-600 hover:underline font-mono font-bold">Open lead {st.leadId} →</button>}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                       {email.isSimulated && <span className="inline-block mt-2 text-[9px] font-bold bg-amber-100 text-amber-800 px-2 py-0.5 rounded">Simulated Fallback</span>}
                     </div>
                   ))}

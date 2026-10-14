@@ -83,9 +83,16 @@ function cleanPlot(p: any): any | null {
   };
 }
 
-lbRoute("GET", "/integration/plots-meta", async ({ c }) => {
+lbRoute("GET", "/integration/plots-meta", async ({ c, query }) => {
   await rateLimit(`lbmeta:${c.id}`, 60, 60);
-  const { data } = await admin.from("plots_snapshot").select("hash,updated_at,plot_count").eq("id", 1).maybeSingle();
+  let { data } = await admin.from("plots_snapshot").select("hash,updated_at,plot_count").eq("id", 1).maybeSingle();
+  // the Land Bank page asks with the hash of the list it holds: same hash = the stored list is still current, so say so ("checked just now")
+  const h = query.get("hash") || "";
+  if (data && h && h === data.hash && (isAdmin(c) || c.role === "Sales Operation")) {
+    const at = nowIso();
+    await admin.from("plots_snapshot").update({ updated_at: at }).eq("id", 1);
+    data = { ...data, updated_at: at };
+  }
   return { success: true, hash: data?.hash || "", updatedAt: data?.updated_at || null, count: data?.plot_count || 0 };
 });
 

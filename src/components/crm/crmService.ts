@@ -363,6 +363,11 @@ export const crmService = {
   getLeads: (): Lead[] => read('leads').slice(),
   getContacts: (): Contact[] => read('contacts').slice(),
   getCompanies: (): Company[] => read('companies').slice(),
+  /** the ingestion history is not part of the cheap refresh: re-read it (after a sync, and when the tab opens) */
+  reloadEmailLogs: async (): Promise<void> => {
+    const rows = await pull('email-logs');
+    if (rows) { write('email-logs', rows); setBaseline('email-logs', rows); changed(); }
+  },
   getEmailLogs: (): EmailImportLog[] => read('email-logs').slice(),
   getTasks: (): SalespersonTask[] => read('tasks').slice(),
   getActivities: (): SalespersonActivity[] => read('activities').slice(),

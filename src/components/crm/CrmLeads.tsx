@@ -2558,6 +2558,14 @@ ${user.name || ''}`);
                 </div>
               </div>
 
+              {/* Description Comments */}
+              <div>
+                <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block mb-2">Original Inquiry Comments</span>
+                <p dir="auto" className="bg-brand-gray/5 border border-brand-gray/15 p-3.5 rounded-xl text-brand-black leading-relaxed whitespace-pre-wrap break-words">
+                  {selectedLead.description || 'No original descriptions loaded.'}
+                </p>
+              </div>
+
               <LeadPlotsPanel
                   lead={selectedLead} plots={plots} landBankUrl={plotsInfo?.landBankUrl} user={user?.name || 'User'}
                   onNavigateToInventory={() => setActiveSubTab('plots-inventory')}
@@ -2568,14 +2576,6 @@ ${user.name || ''}`);
               />
 
               <OfferPrintsSection leadId={selectedLead.id} />
-
-              {/* Description Comments */}
-              <div>
-                <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block mb-2">Original Inquiry Comments</span>
-                <p dir="auto" className="bg-brand-gray/5 border border-brand-gray/15 p-3.5 rounded-xl text-brand-black leading-relaxed whitespace-pre-wrap break-words">
-                  {selectedLead.description || 'No original descriptions loaded.'}
-                </p>
-              </div>
 
               {/* Attachments Section */}
               {selectedLead.attachments?.length > 0 && (
