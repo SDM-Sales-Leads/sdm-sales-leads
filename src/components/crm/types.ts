@@ -202,6 +202,8 @@ export type AssignmentMethod =
   | 'Round Robin'
   | 'Least Active Leads'
   | 'Least Total Leads'
+  | 'Least Open Sqm'
+  | 'Balanced Sqm and Leads'
   | 'Random'
   | 'Project Based'
   | 'Required Size'
@@ -223,6 +225,9 @@ export interface QueueSettings {
   enablePriorityRouting: boolean;
   maxLeadsPerSalesperson: number;
   maxDailyAssignment: number;
+  sqmWeight?: number;              // Balanced method: % of the decision that follows sqm
+  maxSqmPerSalesperson?: number;   // 0 = no limit
+  unknownLeadSqm?: number;         // size assumed for a lead with none (0 = counts as one lead only)
   skipUsersOnLeave: boolean;
   skipDisabledUsers: boolean;
   skipInactiveUsers: boolean;

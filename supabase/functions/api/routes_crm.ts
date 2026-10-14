@@ -14,12 +14,13 @@ import { route } from "./router.ts";
 import { canonicalPark } from "./parks.ts";
 import { sanitizeLead } from "./leadrules.ts";
 import { getBody, htmlToText, listFolder, loadEws } from "./ews.ts";
+import { sqmOf } from "./routing_pick.ts";
 import {
   channelFromMail, chooseAgent, cleanDescription, DEFAULT_QUEUE, ensureContactAndCompany, ensureContactsAndCompaniesBulk, ingestInbox, leadColumns, loadQueue, nextId, parseMail,
 } from "./ingest.ts";
 
 const ID_RE = /^[A-Za-z0-9_.:-]{1,60}$/;
-const METHODS = ["Round Robin", "Least Active Leads", "Least Total Leads", "Random", "Project Based", "Required Size", "Lead Source", "Priority Based", "Working Hours", "VIP Customer Routing", "Company Industry Routing", "Manual Assignment Only"];
+const METHODS = ["Round Robin", "Least Active Leads", "Least Total Leads", "Least Open Sqm", "Balanced Sqm and Leads", "Random", "Project Based", "Required Size", "Lead Source", "Priority Based", "Working Hours", "VIP Customer Routing", "Company Industry Routing", "Manual Assignment Only"];
 
 export async function teamIds(c: Caller): Promise<string[]> {
   const { data } = await admin.from("app_users").select("id").eq("team_leader_id", c.id);
@@ -497,6 +498,20 @@ route("GET", "/crm/webmail/body", async ({ c, query }) => {
 // ---------------------------------------------------------------------------------------------
 // queue settings
 // ---------------------------------------------------------------------------------------------
+// a dry run of the routing: who WOULD get leads of the given sizes (sqm), one after the other. Nothing is assigned or saved.
+route("POST", "/crm/routing/preview", async ({ req, c }) => {
+  needCrm(c);
+  if (crmScope(c) !== "all") throw forbidden();
+  await rateLimit(`routeprev:${c.id}`, 60, 30);
+  const b = await body(req, 4000);
+  const sizes = (Array.isArray(b.sizes) ? b.sizes : []).slice(0, 20).map((x: any) => sqmOf(x));
+  if (!sizes.length) throw bad("Give at least one size");
+  const q = { ...(await loadQueue()), ...(typeof b.method === "string" && METHODS.includes(b.method) ? { assignmentMethod: b.method } : {}) };
+  const sim: any = {}; const trace: any[] = []; const steps: any[] = [];
+  for (const s of sizes) { const a = await chooseAgent({ requiredSize: s || "n/a" }, q, { sim, trace: steps.length ? [] : trace }); steps.push({ sqm: s || null, to: a?.name || null }); }
+  const st = sim.st;
+  return { method: q.assignmentMethod, steps, people: trace.map((t) => ({ name: t.name, openBefore: t.open, sqmBefore: t.sqm, openAfter: st?.open?.[t.id] || 0, sqmAfter: st?.sqm?.[t.id] || 0, eligible: t.eligible })) };
+});
 route("GET", "/crm/queue-settings", async ({ c }) => { needCrm(c); return await loadQueue(); });
 route("POST", "/crm/queue-settings", async ({ req, c }) => {
   needCrm(c);
@@ -507,7 +522,7 @@ route("POST", "/crm/queue-settings", async ({ req, c }) => {
     if (b[k] === undefined) continue;
     const def = (DEFAULT_QUEUE as any)[k];
     if (typeof def === "boolean") s[k] = !!b[k];
-    else if (typeof def === "number") { const n = Number(b[k]); s[k] = Number.isFinite(n) ? Math.max(0, Math.min(10000, n)) : def; }
+    else if (typeof def === "number") { const n = Number(b[k]); s[k] = Number.isFinite(n) ? Math.max(0, Math.min(10_000_000, n)) : def; }
     else if (Array.isArray(def)) s[k] = (Array.isArray(b[k]) ? b[k] : []).slice(0, 50).map((x: any) => str(x, 80)).filter(Boolean);
     else s[k] = str(b[k], 80);
   }

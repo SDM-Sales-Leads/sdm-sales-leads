@@ -1,9 +1,9 @@
 // deno-lint-ignore-file no-explicit-any
 // The bell (per-user notifications), "forgot password" with an e-mailed code, and the reminder schedule.
-import { admin, body, bad, escHtml, getSecret, HttpError, isObj, logActivity, normEmail, nowIso, rateLimit, safeEqual, str } from "./lib.ts";
+import { admin, body, getConfig, needAdmin, setConfig, bad, escHtml, getSecret, HttpError, isObj, logActivity, normEmail, nowIso, rateLimit, safeEqual, str } from "./lib.ts";
 import { route } from "./router.ts";
 import { loadEws, sendMail } from "./ews.ts";
-import { appBase, runReminders } from "./notify.ts";
+import { appBase, notifyOnHold, resetHoldCache, runReminders } from "./notify.ts";
 
 // ---------------------------------------------------------------------------------------------
 // the bell
@@ -27,6 +27,17 @@ route("POST", "/crm/notifications/read", async ({ req, c }) => {
   }
   await q;
   return { success: true };
+});
+
+// hold / unhold every bell notification and reminder/assignment e-mail (the password-reset code is never held)
+route("GET", "/admin/notify-hold", async ({ c }) => { needAdmin(c); return { hold: await getConfig<any>("notify_hold", true) !== false }; });
+route("POST", "/admin/notify-hold", async ({ req, c }) => {
+  needAdmin(c);
+  const b = await body(req, 500);
+  await setConfig("notify_hold", b.hold !== false);
+  resetHoldCache();
+  await logActivity(c, "Notifications", b.hold !== false ? "Notifications and e-mails put on hold" : "Notifications and e-mails switched on", "admin");
+  return { hold: b.hold !== false };
 });
 
 // ---------------------------------------------------------------------------------------------

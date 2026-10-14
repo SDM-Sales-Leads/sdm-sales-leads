@@ -19,6 +19,9 @@ import {
 } from 'lucide-react';
 import { motion } from 'motion/react';
 
+const sqmOf = (v: any) => { const n = Number(String(v ?? '').replace(/[,\s]/g, '')); return Number.isFinite(n) && n > 0 ? n : 0; };
+const fmtSqm = (n: number) => `${Math.round(n).toLocaleString('en-US')} sqm`;
+
 interface CrmAssignmentRulesProps {
   onRulesUpdated: () => void;
   currentRole: string;
@@ -27,6 +30,13 @@ interface CrmAssignmentRulesProps {
 export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesUpdated, currentRole }) => {
   const [activeStrategy, setActiveStrategy] = useState<AssignmentMethod>('Round Robin');
   const [showSavedToast, setShowSavedToast] = useState(false);
+  const [sqmWeight, setSqmWeight] = useState(50);
+  const [maxSqm, setMaxSqm] = useState('');
+  const [unknownSqm, setUnknownSqm] = useState('');
+  const [testSizes, setTestSizes] = useState('10000, 5000, 5000');
+  const [testing, setTesting] = useState(false);
+  const [testOut, setTestOut] = useState<any>(null);
+  const [testErr, setTestErr] = useState('');
 
   // The leads are read from the cache of this tab (the same list the other pages use) and refreshed when it changes.
   const [leads, setLeads] = useState<Lead[]>(() => crmService.getLeads());
@@ -36,6 +46,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
   useEffect(() => {
     const s = crmService.getQueueSettings();
     if (s && s.assignmentMethod) setActiveStrategy(s.assignmentMethod);
+    if (s) { setSqmWeight(typeof s.sqmWeight === 'number' ? s.sqmWeight : 50); setMaxSqm(Number(s.maxSqmPerSalesperson) > 0 ? String(s.maxSqmPerSalesperson) : ''); setUnknownSqm(Number(s.unknownLeadSqm) > 0 ? String(s.unknownLeadSqm) : ''); }
     const refresh = () => { setLeads(crmService.getLeads()); setPeople(crmService.getSalesPeople()); setSettings(crmService.getQueueSettings()); };
     window.addEventListener('crm-data-changed', refresh);
     return () => window.removeEventListener('crm-data-changed', refresh);
@@ -44,8 +55,8 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
   // One pass over the leads for every person: nothing is scanned per row.
   const fairness = useMemo(() => {
     const today = todayISO();
-    const byId = new Map<string, { open: number; total: number; untouched: number; today: number }>();
-    const get = (k: string) => { let r = byId.get(k); if (!r) { r = { open: 0, total: 0, untouched: 0, today: 0 }; byId.set(k, r); } return r; };
+    const byId = new Map<string, { open: number; total: number; untouched: number; today: number; sqm: number }>();
+    const get = (k: string) => { let r = byId.get(k); if (!r) { r = { open: 0, total: 0, untouched: 0, today: 0, sqm: 0 }; byId.set(k, r); } return r; };
     let unassigned = 0;
     const assigned: Lead[] = [];
     for (const l of leads) {
@@ -55,7 +66,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
       if (!k) { if (open) unassigned++; continue; }
       const r = get(k);
       r.total++;
-      if (open) { r.open++; if (!isEngaged(l)) r.untouched++; }
+      if (open) { r.open++; r.sqm += sqmOf(l.requiredSize); if (!isEngaged(l)) r.untouched++; }
       if (dayOf(l.assignedDate) === today) r.today++;
       if (l.assignedDate) assigned.push(l);
     }
@@ -64,7 +75,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
   }, [leads]);
 
   const agents = useMemo(() => people.map((s: any) => {
-    const f = fairness.byId.get(String(s.id)) || { open: 0, total: 0, untouched: 0, today: 0 };
+    const f = fairness.byId.get(String(s.id)) || { open: 0, total: 0, untouched: 0, today: 0, sqm: 0 };
     return {
       id: String(s.id),
       name: s.name,
@@ -72,10 +83,13 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
       // No invented defaults: personal weight/cap only when set; the cap otherwise comes from the queue settings
       weight: typeof s.weight === 'number' && s.weight > 0 ? s.weight : null,
       cap: Number(s.cap) > 0 ? Number(s.cap) : (Number(settings?.maxLeadsPerSalesperson) > 0 ? Number(settings.maxLeadsPerSalesperson) : null),
-      activeLeads: f.open, totalLeads: f.total, untouched: f.untouched, assignedToday: f.today,
+      activeLeads: f.open, openSqm: f.sqm, totalLeads: f.total, untouched: f.untouched, assignedToday: f.today,
       projects: Array.isArray(s.projects) ? s.projects : [],
     };
   }), [people, fairness, settings]);
+  const maxOpenLeads = Math.max(1, ...agents.map((a) => a.activeLeads));
+  const maxOpenSqm = Math.max(1, ...agents.map((a) => a.openSqm));
+  const sqmSpread = agents.length > 1 ? Math.max(...agents.map((a) => a.openSqm)) - Math.min(...agents.map((a) => a.openSqm)) : null;
   const spread = agents.length > 1 ? Math.max(...agents.map((a) => a.activeLeads)) - Math.min(...agents.map((a) => a.activeLeads)) : null;
 
   // Only the methods the server really applies are offered. An assigned lead keeps the status New: the team's vocabulary has no "Assigned".
@@ -83,6 +97,8 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
     { value: 'Round Robin', title: 'Round Robin', description: 'Hands each new lead to the next eligible person in name order, so everybody gets the same number.' },
     { value: 'Least Active Leads', title: 'Least Active Leads', description: 'Gives the lead to the eligible person with the fewest open leads (ties: fewest leads overall).' },
     { value: 'Least Total Leads', title: 'Least Total Leads', description: 'Gives the lead to the eligible person who has received the fewest leads in total.' },
+    { value: 'Balanced Sqm and Leads', title: 'Fair: sqm + number of leads', description: 'Balances BOTH the area (sqm) and the number of leads each person holds. You choose how much weight sqm gets. One 10,000 sqm lead is worth two 5,000 sqm leads.' },
+    { value: 'Least Open Sqm', title: 'Fair: least sqm', description: 'Gives the lead to the person holding the fewest open sqm (ties: fewest open leads). Best when sqm is what the team sells.' },
     { value: 'Random', title: 'Random', description: 'Picks one eligible person at random.' },
     { value: 'Manual Assignment Only', title: 'Manual only', description: 'New leads stay unassigned (status New) until Sales Operation distributes them.' },
   ];
@@ -92,11 +108,27 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
     const currentSettings = crmService.getQueueSettings();
     crmService.saveQueueSettings({
       ...currentSettings,
-      assignmentMethod: activeStrategy
+      assignmentMethod: activeStrategy,
+      sqmWeight,
+      maxSqmPerSalesperson: sqmOf(maxSqm),
+      unknownLeadSqm: sqmOf(unknownSqm),
     });
     setShowSavedToast(true);
     setTimeout(() => setShowSavedToast(false), 3000);
     onRulesUpdated();
+  };
+
+  const runTest = async () => {
+    const sizes = testSizes.split(/[,\s;]+/).map((x) => sqmOf(x)).filter((x) => x > 0);
+    setTestErr(''); setTestOut(null);
+    if (!sizes.length) { setTestErr('Type the lead sizes in sqm, separated by commas.'); return; }
+    setTesting(true);
+    try {
+      const res = await fetch('/api/crm/routing/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sizes, method: activeStrategy }) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'The test could not run.');
+      setTestOut(j);
+    } catch (e: any) { setTestErr(e.message || 'The test could not run.'); } finally { setTesting(false); }
   };
 
   const hasAdminRole = currentRole === 'Admin' || currentRole === 'System Admin' || currentRole === 'System Administrator' || currentRole === 'Sales Manager' || currentRole === 'Sales Operations Manager' || currentRole === 'Sales Operation';
@@ -158,6 +190,26 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
               })}
             </div>
 
+            {(
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-brand-gray/10">
+                <label className={`block ${activeStrategy === 'Balanced Sqm and Leads' ? '' : 'opacity-50'}`}>
+                  <span className="font-bold text-brand-black">Weight of sqm: {sqmWeight}%</span>
+                  <input type="range" min={0} max={100} step={5} value={sqmWeight} disabled={!hasAdminRole || activeStrategy !== 'Balanced Sqm and Leads'} onChange={(e) => setSqmWeight(Number(e.target.value))} className="w-full accent-brand-red" />
+                  <span className="text-[10px] text-brand-gray font-semibold">{sqmWeight}% follows sqm, {100 - sqmWeight}% follows number of leads. Only for the "sqm + number of leads" method.</span>
+                </label>
+                <label className="block">
+                  <span className="font-bold text-brand-black">Max open sqm per person</span>
+                  <input type="number" min={0} className="input-field mt-1" placeholder="No limit" value={maxSqm} disabled={!hasAdminRole} onChange={(e) => setMaxSqm(e.target.value)} />
+                  <span className="text-[10px] text-brand-gray font-semibold">Someone at this total gets no more leads (an empty person can still take one big lead).</span>
+                </label>
+                <label className="block">
+                  <span className="font-bold text-brand-black">Size to assume if a lead has none</span>
+                  <input type="number" min={0} className="input-field mt-1" placeholder="0 = count as one lead" value={unknownSqm} disabled={!hasAdminRole} onChange={(e) => setUnknownSqm(e.target.value)} />
+                  <span className="text-[10px] text-brand-gray font-semibold">Website leads often have no sqm. Leave empty to not guess.</span>
+                </label>
+              </div>
+            )}
+
             {hasAdminRole ? (
               <div className="flex items-center justify-between pt-4 border-t border-brand-gray/10">
                 <span className="text-[10px] text-brand-gray font-bold">Policy updates apply immediately across API integrations.</span>
@@ -206,11 +258,15 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
                       </span>
                     </div>
 
-                    <div className="w-full bg-brand-gray/20 h-1.5 rounded-full overflow-hidden">
-                      <div 
-                        className={`h-full rounded-full ${percentage > 85 ? 'bg-rose-500' : 'bg-brand-red'}`}
-                        style={{ width: `${percentage}%` }}
-                      />
+                    <div className="space-y-1.5">
+                      <div>
+                        <div className="flex justify-between text-[10px] font-bold text-brand-gray"><span>Leads</span><span className="font-mono text-brand-black">{agent.activeLeads}</span></div>
+                        <div className="w-full bg-brand-gray/20 h-2 rounded-full overflow-hidden"><div className={`h-full rounded-full ${percentage > 85 ? 'bg-rose-500' : 'bg-brand-red'}`} style={{ width: `${Math.round((agent.activeLeads / maxOpenLeads) * 100)}%` }} /></div>
+                      </div>
+                      <div>
+                        <div className="flex justify-between text-[10px] font-bold text-brand-gray"><span>Area assigned</span><span className="font-mono text-brand-black">{agent.openSqm > 0 ? fmtSqm(agent.openSqm) : '—'}</span></div>
+                        <div className="w-full bg-brand-gray/20 h-2 rounded-full overflow-hidden"><div className="h-full rounded-full bg-sky-600" style={{ width: `${Math.round((agent.openSqm / maxOpenSqm) * 100)}%` }} /></div>
+                      </div>
                     </div>
 
                     <div className="flex justify-between items-center text-[9px] text-brand-gray font-bold uppercase tracking-wider">
@@ -230,6 +286,28 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
 
       </div>
 
+      {/* Test the routing: nothing is assigned */}
+      <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-5 space-y-3 text-xs">
+        <h4 className="font-bold text-brand-black text-sm uppercase tracking-wide">Test the routing <span className="text-[10px] normal-case text-brand-gray font-semibold">(no lead is assigned, nobody is notified)</span></h4>
+        <p className="text-brand-gray font-semibold">Type the sizes (sqm) of leads that arrive one after the other. It shows who would get each, using the selected method and today's real workload.</p>
+        <div className="flex flex-wrap gap-2">
+          <input className="input-field flex-1 min-w-[220px]" value={testSizes} onChange={(e) => setTestSizes(e.target.value)} placeholder="10000, 5000, 5000" />
+          <button onClick={runTest} disabled={testing} className="bg-brand-black text-white px-4 py-2 rounded-xl font-bold disabled:opacity-60">{testing ? 'Testing…' : 'Run test'}</button>
+        </div>
+        {testErr && <p className="text-brand-red font-bold">{testErr}</p>}
+        {testOut && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-1">{testOut.steps.map((st: any, i: number) => (
+              <div key={i} className="flex justify-between bg-brand-gray/5 rounded-lg px-3 py-1.5"><span className="font-semibold">Lead {i + 1} · {st.sqm ? fmtSqm(st.sqm) : 'no size'}</span><span className="font-bold text-brand-black">→ {st.to || 'stays unassigned'}</span></div>
+            ))}</div>
+            <table className="w-full text-left"><thead><tr className="text-[10px] uppercase text-brand-gray font-bold border-b border-brand-gray/15"><th className="py-1">Person</th><th className="py-1 text-right">Leads before → after</th><th className="py-1 text-right">Sqm before → after</th></tr></thead>
+              <tbody className="divide-y divide-brand-gray/10 font-semibold">{testOut.people.map((p: any) => (
+                <tr key={p.name}><td className="py-1">{p.name}{!p.eligible && <span className="ml-1 text-[9px] text-brand-gray">(at a limit)</span>}</td><td className="py-1 text-right font-mono">{p.openBefore} → {p.openAfter}</td><td className="py-1 text-right font-mono">{Math.round(p.sqmBefore).toLocaleString('en-US')} → {Math.round(p.sqmAfter).toLocaleString('en-US')}</td></tr>
+              ))}</tbody></table>
+          </div>
+        )}
+      </div>
+
       {/* Fairness: read-only, from the leads themselves */}
       <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm p-5 space-y-4 text-xs">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -239,6 +317,7 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
           <div className="flex gap-4 text-[10px] font-bold text-brand-gray">
             <span>Unassigned open leads: <span className={`font-mono ${fairness.unassigned ? 'text-amber-600' : 'text-brand-black'}`}>{fairness.unassigned}</span></span>
             <span>Spread between people: <span className="font-mono text-brand-black">{spread == null ? '—' : spread}</span></span>
+            <span>Sqm spread: <span className="font-mono text-brand-black">{sqmSpread == null ? '—' : fmtSqm(sqmSpread)}</span></span>
             <span>Cap per person: <span className="font-mono text-brand-black">{Number(settings?.maxLeadsPerSalesperson) > 0 ? settings.maxLeadsPerSalesperson : '—'}</span></span>
             <span>Daily limit: <span className="font-mono text-brand-black">{Number(settings?.maxDailyAssignment) > 0 ? settings.maxDailyAssignment : '—'}</span></span>
           </div>
@@ -247,13 +326,13 @@ export const CrmAssignmentRules: React.FC<CrmAssignmentRulesProps> = ({ onRulesU
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead><tr className="text-[10px] uppercase text-brand-gray font-bold border-b border-brand-gray/15">
-                <th className="py-2 pr-2">Salesperson</th><th className="py-2 px-2 text-right">Open</th><th className="py-2 px-2 text-right">Not yet contacted</th><th className="py-2 px-2 text-right">Assigned today</th><th className="py-2 pl-2 text-right">Total</th>
+                <th className="py-2 pr-2">Salesperson</th><th className="py-2 px-2 text-right">Open</th><th className="py-2 px-2 text-right">Open sqm</th><th className="py-2 px-2 text-right">Not yet contacted</th><th className="py-2 px-2 text-right">Assigned today</th><th className="py-2 pl-2 text-right">Total</th>
               </tr></thead>
               <tbody className="divide-y divide-brand-gray/10 font-semibold">
-                {agents.length === 0 && <tr><td colSpan={5} className="py-4 text-center text-brand-gray">No salespeople configured.</td></tr>}
+                {agents.length === 0 && <tr><td colSpan={6} className="py-4 text-center text-brand-gray">No salespeople configured.</td></tr>}
                 {[...agents].sort((a, b) => b.activeLeads - a.activeLeads).map((a) => (
                   <tr key={a.id}><td className="py-2 pr-2 font-bold text-brand-black">{a.name}{a.status !== 'Online' && <span className="ml-1 text-[9px] text-brand-gray font-bold">({a.status})</span>}</td>
-                    <td className="py-2 px-2 text-right font-mono">{a.activeLeads}</td><td className="py-2 px-2 text-right font-mono">{a.untouched}</td>
+                    <td className="py-2 px-2 text-right font-mono">{a.activeLeads}</td><td className="py-2 px-2 text-right font-mono">{a.openSqm > 0 ? a.openSqm.toLocaleString('en-US') : '—'}</td><td className="py-2 px-2 text-right font-mono">{a.untouched}</td>
                     <td className="py-2 px-2 text-right font-mono">{a.assignedToday}</td><td className="py-2 pl-2 text-right font-mono text-brand-gray">{a.totalLeads}</td></tr>
                 ))}
               </tbody>

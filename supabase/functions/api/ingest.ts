@@ -5,6 +5,7 @@ import {
 } from "./lib.ts";
 import { canonicalPark } from "./parks.ts";
 import { later, notifyAssigned } from "./notify.ts";
+import { effectiveSqm, pickBySize, sqmOf, Load } from "./routing_pick.ts";
 import { getBodies, getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
 
 export const DEFAULT_QUEUE = {
@@ -16,6 +17,9 @@ export const DEFAULT_QUEUE = {
   enablePriorityRouting: false,
   maxLeadsPerSalesperson: 20,
   maxDailyAssignment: 5,
+  sqmWeight: 50,              // "Balanced" method: % of the decision that follows sqm (the rest follows number of leads)
+  maxSqmPerSalesperson: 0,    // 0 = no limit on the open sqm one person can hold
+  unknownLeadSqm: 0,          // size to assume for a lead that has none (0 = counts only as one lead)
   skipUsersOnLeave: true,
   skipDisabledUsers: true,
   skipInactiveUsers: true,
@@ -278,8 +282,10 @@ export async function loadQueue() {
   return { ...DEFAULT_QUEUE, ...(await getConfig<any>("queue_settings", {})) };
 }
 
-const ROUTE_STATS = new Map<string, { at: number; open: Record<string, number>; total: Record<string, number>; today: Record<string, number> }>();
-export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name: string } | null> {
+type RStats = { at: number; open: Record<string, number>; total: Record<string, number>; today: Record<string, number>; sqm: Record<string, number> };
+const ROUTE_STATS = new Map<string, RStats>();
+/** opts.sim: a dry run. Nothing is saved or cached; the same object carries the pretend state from one lead to the next. */
+export async function chooseAgent(lead: any, q: any, opts?: { sim?: any; trace?: any[] }): Promise<{ id: string; name: string } | null> {
   if (q.assignmentMethod === "Manual Assignment Only") return null;
 
   const { data: users } = await admin.from("app_users").select("id,name,role,active,on_leave").in("role", SALES_ROLES);
@@ -290,28 +296,32 @@ export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name
   const ids = pool.map((u: any) => u.id);
   // the per-person counts are kept for 90 s (and bumped by every pick) instead of reading all their leads again for every new lead
   const statsKey = [...ids].sort().join(",");
-  let st = ROUTE_STATS.get(statsKey);
-  if (!st || Date.now() - st.at > 90_000) {
-    const rows = await pageAll((a, b) => admin.from("crm_leads").select("assigned_to,status,created_at,data->assignedDate").in("assigned_to", ids).is("deleted_at", null).order("id").range(a, b));
+  let st = opts?.sim?.st as RStats | undefined || ROUTE_STATS.get(statsKey);
+  if (!st || (!opts?.sim?.st && Date.now() - st.at > 90_000)) {
+    const rows = await pageAll((a, b) => admin.from("crm_leads").select("assigned_to,status,created_at,data->assignedDate,data->requiredSize").in("assigned_to", ids).is("deleted_at", null).order("id").range(a, b));
     const open: Record<string, number> = {};
     const total: Record<string, number> = {};
     const today: Record<string, number> = {};
+    const sqm: Record<string, number> = {};
     const day0 = new Date(); day0.setUTCHours(0, 0, 0, 0);
     for (const r of rows || []) {
       const k = r.assigned_to as string;
       total[k] = (total[k] || 0) + 1;
-      if (!CLOSED.has(r.status || "")) open[k] = (open[k] || 0) + 1;
+      if (!CLOSED.has(r.status || "")) { open[k] = (open[k] || 0) + 1; sqm[k] = (sqm[k] || 0) + effectiveSqm((r as any).requiredSize, q); }
       const ad = (r as any).assignedDate ? new Date((r as any).assignedDate) : new Date(r.created_at);
       if (ad >= day0) today[k] = (today[k] || 0) + 1;
     }
-    st = { at: Date.now(), open, total, today };
-    ROUTE_STATS.set(statsKey, st);
-    if (ROUTE_STATS.size > 5) ROUTE_STATS.delete(ROUTE_STATS.keys().next().value as string);
+    st = { at: Date.now(), open, total, today, sqm };
+    if (opts?.sim) { st = { ...st, open: { ...open }, total: { ...total }, today: { ...today }, sqm: { ...sqm } }; opts.sim.st = st; }
+    else { ROUTE_STATS.set(statsKey, st); if (ROUTE_STATS.size > 5) ROUTE_STATS.delete(ROUTE_STATS.keys().next().value as string); }
   }
-  const { open, total, today } = st;
+  const { open, total, today, sqm } = st;
+  const leadSize = effectiveSqm(lead?.requiredSize, q);
+  const maxSqm = Number(q.maxSqmPerSalesperson) || 0;
   const maxOpen = Number(q.maxLeadsPerSalesperson) || 0;
   const maxDay = Number(q.maxDailyAssignment) || 0;
-  let elig = pool.filter((u: any) => (!maxOpen || (open[u.id] || 0) < maxOpen) && (!maxDay || (today[u.id] || 0) < maxDay));
+  let elig = pool.filter((u: any) => (!maxOpen || (open[u.id] || 0) < maxOpen) && (!maxDay || (today[u.id] || 0) < maxDay) && (!maxSqm || (sqm[u.id] || 0) + leadSize <= maxSqm || (sqm[u.id] || 0) === 0));
+  if (opts?.trace) for (const u of pool) opts.trace.push({ id: u.id, name: u.name, open: open[u.id] || 0, sqm: sqm[u.id] || 0, eligible: elig.some((e: any) => e.id === u.id) });
   if (!elig.length) {
     // overflow: back-up person, else leave unassigned in the queue for a manager
     const b = asUuid(q.backupSalespersonId);
@@ -328,15 +338,20 @@ export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name
   } else if (method === "Round Robin") {
     const key = (u: any) => `${u.name}\u0000${u.id}`;
     elig = [...elig].sort((a, b) => key(a).localeCompare(key(b)));
-    const cur = await getConfig<any>("rr_cursor", {});
+    const cur = opts?.sim ? { last: opts.sim.rr } : await getConfig<any>("rr_cursor", {});
     const lastUser = (users || []).find((u: any) => u.id === cur.last);
     // next eligible person after the previous pick (in name order), wrapping round
     pick = (lastUser && elig.find((u: any) => key(u).localeCompare(key(lastUser)) > 0)) || elig[0];
-    await admin.from("system_config").upsert({ key: "rr_cursor", value: { last: pick.id }, updated_at: nowIso() });
+    if (opts?.sim) opts.sim.rr = pick.id; else await admin.from("system_config").upsert({ key: "rr_cursor", value: { last: pick.id }, updated_at: nowIso() });
+  } else if (method === "Least Open Sqm" || method === "Balanced Sqm and Leads") {
+    const load: Record<string, Load> = {};
+    for (const u of elig) load[u.id] = { open: open[u.id] || 0, sqm: sqm[u.id] || 0, total: total[u.id] || 0 };
+    pick = pickBySize(elig, load, method, q);
   } else {
     // "Least Active Leads" and every method this server does not model yet
     pick = [...elig].sort((a, b) => (open[a.id] || 0) - (open[b.id] || 0) || (total[a.id] || 0) - (total[b.id] || 0) || a.name.localeCompare(b.name))[0];
   }
+  sqm[pick.id] = (sqm[pick.id] || 0) + leadSize;
   open[pick.id] = (open[pick.id] || 0) + 1; total[pick.id] = (total[pick.id] || 0) + 1; today[pick.id] = (today[pick.id] || 0) + 1;
   return { id: pick.id, name: pick.name };
 }
