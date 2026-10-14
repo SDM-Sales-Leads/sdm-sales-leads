@@ -433,20 +433,42 @@ export async function ingestInbox(max = 25, byUser?: string) {
     }
     const cfg = await loadEws();
     const queue = await loadQueue();
+    // only mail newer than the last one handled (minus 45 minutes of overlap) is asked from the mail server; the first run (no
+    // cursor yet) looks at the newest 100 once and sets the cursor afterwards
+    const cursor = await getConfig<any>("mail_cursor", {});
+    const since = cursor.at && !isNaN(Date.parse(cursor.at)) ? new Date(Date.parse(cursor.at) - 45 * 60_000).toISOString() : undefined;
+    let every: MailHead[] = [];
     let heads: MailHead[];
-    try { heads = (await listFolder(cfg, "inbox", 100)).filter((h) => subjectLooksLikeLead(h.subject)); }
+    try {
+      for (let page = 0; page < (since ? 5 : 1); page++) {
+        let part: MailHead[];
+        try { part = await listFolder(cfg, "inbox", 100, since, page * 100); }
+        catch (e: any) {
+          // the time filter itself was refused (not a sign-in problem): fall back to the plain newest-100 list this once
+          if (since && e instanceof HttpError && /^Mail server error/.test(e.message)) part = await listFolder(cfg, "inbox", 100);
+          else throw e;
+        }
+        every = every.concat(part);
+        if (part.length < 100) break;
+      }
+      heads = every.filter((h) => subjectLooksLikeLead(h.subject));
+    }
     catch (e: any) {
       if (e instanceof HttpError && /mail server/i.test(e.message)) await setConfig("ews_pause", { until: new Date(Date.now() + 20 * 60_000).toISOString(), reason: e.message.slice(0, 120) });
       throw e;
     }
-    if (!heads.length) return { newLeadsCount: 0, processed: 0, remaining: 0 };
+    const newest = every.reduce((m, h) => (Date.parse(h.receivedTime) > m ? Date.parse(h.receivedTime) : m), 0);
+    const moveCursor = async () => { if (newest && (!cursor.at || newest > Date.parse(cursor.at))) await setConfig("mail_cursor", { at: new Date(newest).toISOString(), run: nowIso() }); };
+    if (!heads.length) { await moveCursor(); return { newLeadsCount: 0, processed: 0, remaining: 0 }; }
 
     const ids = heads.map((h) => h.id);
     const seen = new Set<string>();
-    const a = await admin.from("crm_email_logs").select("id").in("id", ids);
-    (a.data || []).forEach((r: any) => seen.add(r.id));
-    const b = await admin.from("crm_leads").select("email_id").in("email_id", ids);
-    (b.data || []).forEach((r: any) => seen.add(r.email_id));
+    for (let i = 0; i < ids.length; i += 40) {                       // chunks: mail ids are long, a single request would be too big
+      const part = ids.slice(i, i + 40);
+      const [a, b] = await Promise.all([admin.from("crm_email_logs").select("id").in("id", part), admin.from("crm_leads").select("email_id").in("email_id", part)]);
+      (a.data || []).forEach((r: any) => seen.add(r.id));
+      (b.data || []).forEach((r: any) => seen.add(r.email_id));
+    }
     const todo = heads.filter((h) => !seen.has(h.id));
 
     let created = 0, processed = 0, dups = 0, failed = 0;
@@ -499,6 +521,7 @@ export async function ingestInbox(max = 25, byUser?: string) {
         });
       }
     }
+    if (todo.length <= batch.length) await moveCursor();   // everything up to the newest mail is handled: next time start there
     return { newLeadsCount: created, processed, duplicates: dups, failed, leads, remaining: Math.max(0, todo.length - processed) };
   } finally {
     await unlock("ingest");

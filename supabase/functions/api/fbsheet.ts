@@ -118,14 +118,21 @@ export async function syncFacebook(opts: { since?: string; byUser?: string } = {
     const since = opts.since || cfg.since || nowIso();
     if (!cfg.since || opts.since) await setConfig("fb_sheet", { ...cfg, enabled: cfg.enabled !== false, since });
 
-    let names = await tabNames().catch(() => [] as string[]);
+    // the tab list changes once a month: ask the sheet's page for it only every 6 hours (that page is large)
+    let names: string[] = Array.isArray(cfg.tabs) && cfg.tabsAt && Date.now() - Date.parse(cfg.tabsAt) < 6 * 3600_000 ? cfg.tabs : [];
+    if (!names.length) {
+      names = await tabNames().catch(() => [] as string[]);
+      if (names.length) await setConfig("fb_sheet", { ...(await getConfig<any>("fb_sheet", {})), tabs: names, tabsAt: nowIso() });
+    }
     if (!names.length && cfg.lastTab) names = [cfg.lastTab];
     if (!names.length) return { fbNew: 0, fbError: "Could not read the sheet's tabs" };
     const tabs = names.slice(-2);                                   // the newest tab, and the one before it for the month change
     let rows: FbRow[] = [];
     for (const t of tabs) rows = rows.concat(rowsOf(await tabRows(t).catch(() => [])));
     const seenIds = new Set<string>(); rows = rows.filter((r) => !seenIds.has(r.fbId) && seenIds.add(r.fbId));
-    rows = rows.filter((r) => Date.parse(r.time) > Date.parse(since)).sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    // only leads newer than the last one handled (2 hours of overlap: the sheet can receive a lead a little late); the lead id still prevents doubles
+    const from = Math.max(Date.parse(since), cfg.cursor && !isNaN(Date.parse(cfg.cursor)) ? Date.parse(cfg.cursor) - 2 * 3600_000 : 0);
+    rows = rows.filter((r) => Date.parse(r.time) > from).sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
     if (!rows.length) { await setConfig("fb_sheet", { ...(await getConfig<any>("fb_sheet", {})), lastTab: names[names.length - 1], lastRun: nowIso() }); return { fbNew: 0, fbTab: names[names.length - 1] }; }
 
     const known = new Set<string>();
@@ -151,7 +158,8 @@ export async function syncFacebook(opts: { since?: string; byUser?: string } = {
         await logMail(base, "Failed", { ...base, bodyPreview: r.text, error: "Unexpected error while saving this lead" }).catch(() => {});
       }
     }
-    await setConfig("fb_sheet", { ...(await getConfig<any>("fb_sheet", {})), lastTab: names[names.length - 1], lastRun: nowIso() });
+    const newestRow = rows.reduce((m, r) => Math.max(m, Date.parse(r.time)), 0);
+    await setConfig("fb_sheet", { ...(await getConfig<any>("fb_sheet", {})), lastTab: names[names.length - 1], lastRun: nowIso(), ...(todo.length <= MAX_PER_RUN && newestRow ? { cursor: new Date(newestRow).toISOString() } : {}) });
     return { fbNew: created, fbDuplicates: dups, fbFailed: failed, fbRemaining: Math.max(0, todo.length - MAX_PER_RUN), fbLeads: leads, fbTab: names[names.length - 1] };
   } finally { await unlock("fbsync"); }
 }

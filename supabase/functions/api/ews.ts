@@ -99,13 +99,17 @@ export interface MailHead {
   folder: string;
 }
 
-export async function listFolder(cfg: EwsConfig, folder: "inbox" | "sentitems", limit: number): Promise<MailHead[]> {
+export async function listFolder(cfg: EwsConfig, folder: "inbox" | "sentitems", limit: number, since?: string, offset = 0): Promise<MailHead[]> {
+  // `since` (ISO time made by us) = only mail received at or after it: the mail server filters, we do not list what we already handled
+  const restriction = since && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(since)
+    ? `<m:Restriction><t:IsGreaterThanOrEqualTo><t:FieldURI FieldURI="item:DateTimeReceived" /><t:FieldURIOrConstant><t:Constant Value="${since}" /></t:FieldURIOrConstant></t:IsGreaterThanOrEqualTo></m:Restriction>` : "";
   const xml = await call(cfg, envelope(`<m:FindItem Traversal="Shallow">
       <m:ItemShape><t:BaseShape>IdOnly</t:BaseShape><t:AdditionalProperties>
         <t:FieldURI FieldURI="item:Subject" /><t:FieldURI FieldURI="item:DateTimeReceived" />
         <t:FieldURI FieldURI="message:From" /><t:FieldURI FieldURI="message:ToRecipients" /><t:FieldURI FieldURI="item:Preview" />
       </t:AdditionalProperties></m:ItemShape>
-      <m:IndexedPageItemView MaxEntriesReturned="${Math.max(1, Math.min(limit, 100))}" Offset="0" BasePoint="Beginning" />
+      <m:IndexedPageItemView MaxEntriesReturned="${Math.max(1, Math.min(limit, 100))}" Offset="${Math.max(0, offset)}" BasePoint="Beginning" />
+      ${restriction}
       <m:SortOrder><t:FieldOrder Order="Descending"><t:FieldURI FieldURI="item:DateTimeReceived" /></t:FieldOrder></m:SortOrder>
       <m:ParentFolderIds><t:DistinguishedFolderId Id="${folder}" /></m:ParentFolderIds>
     </m:FindItem>`));
