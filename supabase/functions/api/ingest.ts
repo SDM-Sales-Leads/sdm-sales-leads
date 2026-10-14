@@ -271,6 +271,7 @@ export async function loadQueue() {
   return { ...DEFAULT_QUEUE, ...(await getConfig<any>("queue_settings", {})) };
 }
 
+const ROUTE_STATS = new Map<string, { at: number; open: Record<string, number>; total: Record<string, number>; today: Record<string, number> }>();
 export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name: string } | null> {
   if (q.assignmentMethod === "Manual Assignment Only") return null;
 
@@ -280,18 +281,27 @@ export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name
   if (!pool.length) return null;
 
   const ids = pool.map((u: any) => u.id);
-  const rows = await pageAll((a, b) => admin.from("crm_leads").select("assigned_to,status,created_at,data->assignedDate").in("assigned_to", ids).is("deleted_at", null).order("id").range(a, b));
-  const open: Record<string, number> = {};
-  const total: Record<string, number> = {};
-  const today: Record<string, number> = {};
-  const day0 = new Date(); day0.setUTCHours(0, 0, 0, 0);
-  for (const r of rows || []) {
-    const k = r.assigned_to as string;
-    total[k] = (total[k] || 0) + 1;
-    if (!CLOSED.has(r.status || "")) open[k] = (open[k] || 0) + 1;
-    const ad = (r as any).assignedDate ? new Date((r as any).assignedDate) : new Date(r.created_at);
-    if (ad >= day0) today[k] = (today[k] || 0) + 1;
+  // the per-person counts are kept for 90 s (and bumped by every pick) instead of reading all their leads again for every new lead
+  const statsKey = [...ids].sort().join(",");
+  let st = ROUTE_STATS.get(statsKey);
+  if (!st || Date.now() - st.at > 90_000) {
+    const rows = await pageAll((a, b) => admin.from("crm_leads").select("assigned_to,status,created_at,data->assignedDate").in("assigned_to", ids).is("deleted_at", null).order("id").range(a, b));
+    const open: Record<string, number> = {};
+    const total: Record<string, number> = {};
+    const today: Record<string, number> = {};
+    const day0 = new Date(); day0.setUTCHours(0, 0, 0, 0);
+    for (const r of rows || []) {
+      const k = r.assigned_to as string;
+      total[k] = (total[k] || 0) + 1;
+      if (!CLOSED.has(r.status || "")) open[k] = (open[k] || 0) + 1;
+      const ad = (r as any).assignedDate ? new Date((r as any).assignedDate) : new Date(r.created_at);
+      if (ad >= day0) today[k] = (today[k] || 0) + 1;
+    }
+    st = { at: Date.now(), open, total, today };
+    ROUTE_STATS.set(statsKey, st);
+    if (ROUTE_STATS.size > 5) ROUTE_STATS.delete(ROUTE_STATS.keys().next().value as string);
   }
+  const { open, total, today } = st;
   const maxOpen = Number(q.maxLeadsPerSalesperson) || 0;
   const maxDay = Number(q.maxDailyAssignment) || 0;
   let elig = pool.filter((u: any) => (!maxOpen || (open[u.id] || 0) < maxOpen) && (!maxDay || (today[u.id] || 0) < maxDay));
@@ -320,6 +330,7 @@ export async function chooseAgent(lead: any, q: any): Promise<{ id: string; name
     // "Least Active Leads" and every method this server does not model yet
     pick = [...elig].sort((a, b) => (open[a.id] || 0) - (open[b.id] || 0) || (total[a.id] || 0) - (total[b.id] || 0) || a.name.localeCompare(b.name))[0];
   }
+  open[pick.id] = (open[pick.id] || 0) + 1; total[pick.id] = (total[pick.id] || 0) + 1; today[pick.id] = (today[pick.id] || 0) + 1;
   return { id: pick.id, name: pick.name };
 }
 
