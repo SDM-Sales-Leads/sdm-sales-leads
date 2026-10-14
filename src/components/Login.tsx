@@ -17,8 +17,11 @@ export const Login: React.FC = () => {
     setIsLoading(true);
     try {
       await login(email, password);
-    } catch (err) {
-      setError('Invalid email or password');
+    } catch (err: any) {
+      const m = String(err?.message || '');
+      setError(m === 'PROFILE_BUSY' ? 'You signed in correctly, but the system is busy and could not load your profile. Please try again in a moment.'
+        : m === 'This account has no access' ? 'This account is not active or has no access to Sales Leads. Ask the administrator.'
+        : 'Invalid email or password');
     } finally {
       setIsLoading(false);
     }

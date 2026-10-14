@@ -81,6 +81,41 @@ const callerCache = new Map<string, { until: number; caller: Caller }>();
 const TOKEN_TTL = 60_000, CALLER_TTL = 20_000;
 export function dropCallerCache() { tokenCache.clear(); callerCache.clear(); }
 
+// Token check without a trip to the Auth service: this project signs its tokens (ES256) with a public key, so the signature,
+// expiry and audience are verified here with the published key (kept for an hour). Anything unusual (another algorithm, key not
+// found) falls back to asking Auth. A temporary Auth failure answers 503 "busy", never 401, so nobody is logged out by a hiccup.
+const b64u = (s: string) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=")), (c) => c.charCodeAt(0));
+let jwkCache: { at: number; keys: Map<string, CryptoKey> } | null = null;
+async function jwkFor(kid: string, force = false): Promise<CryptoKey | null> {
+  if (!force && jwkCache && Date.now() - jwkCache.at < 3600_000 && jwkCache.keys.has(kid)) return jwkCache.keys.get(kid)!;
+  const r = await fetch(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`, { headers: { apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "" } });
+  if (!r.ok) throw new Error("jwks " + r.status);
+  const keys = new Map<string, CryptoKey>();
+  for (const k of (await r.json()).keys || []) {
+    if (k.kty !== "EC" || k.crv !== "P-256" || !k.kid) continue;
+    keys.set(k.kid, await crypto.subtle.importKey("jwk", { kty: k.kty, crv: k.crv, x: k.x, y: k.y, ext: true }, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]));
+  }
+  jwkCache = { at: Date.now(), keys };
+  return keys.get(kid) || null;
+}
+/** user id from a valid token; null = the token is not valid (or cannot be judged locally -> ask Auth) */
+async function localUid(token: string): Promise<{ uid: string } | "invalid" | null> {
+  try {
+    const [h, p, sig] = token.split(".");
+    if (!h || !p || !sig) return "invalid";
+    const head = JSON.parse(new TextDecoder().decode(b64u(h)));
+    if (head.alg !== "ES256" || !head.kid) return null;                       // not what we can judge here: ask Auth
+    let key = await jwkFor(head.kid);
+    if (!key) key = await jwkFor(head.kid, true);
+    if (!key) return null;
+    const ok = await crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, key, b64u(sig), new TextEncoder().encode(`${h}.${p}`));
+    if (!ok) return "invalid";
+    const pay = JSON.parse(new TextDecoder().decode(b64u(p)));
+    if (!pay.sub || (pay.exp && pay.exp * 1000 < Date.now()) || (pay.aud && pay.aud !== "authenticated")) return "invalid";
+    return { uid: String(pay.sub) };
+  } catch { return null; }
+}
+
 export async function getCaller(req: Request): Promise<Caller> {
   const h = req.headers.get("authorization") || "";
   const token = h.toLowerCase().startsWith("bearer ") ? h.slice(7).trim() : "";
@@ -88,9 +123,20 @@ export async function getCaller(req: Request): Promise<Caller> {
   const now = Date.now();
   let uid = tokenCache.get(token)?.until! > now ? tokenCache.get(token)!.uid : "";
   if (!uid) {
-    const { data, error } = await admin.auth.getUser(token);
-    if (error || !data?.user) throw new HttpError(401, "Session expired, sign in again");
-    uid = data.user.id;
+    const local = await localUid(token);
+    if (local === "invalid") throw new HttpError(401, "Session expired, sign in again");
+    if (local) uid = local.uid;
+    else {
+      let res: any = null;
+      for (let i = 0; i < 2 && !(res?.data?.user); i++) res = await admin.auth.getUser(token).catch((e: any) => ({ error: e }));
+      if (!res?.data?.user) {
+        const st = Number(res?.error?.status || 0);
+        // Auth says "this token is bad" (4xx) = sign in again; Auth failing or unreachable = busy, try again
+        if (st >= 400 && st < 500) throw new HttpError(401, "Session expired, sign in again");
+        throw new HttpError(503, "The sign-in service is busy. Please try again in a moment.");
+      }
+      uid = res.data.user.id;
+    }
     if (tokenCache.size > 400) tokenCache.clear();
     tokenCache.set(token, { uid, until: now + TOKEN_TTL });
   }

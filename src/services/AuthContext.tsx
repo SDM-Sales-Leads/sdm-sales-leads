@@ -24,9 +24,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   // who am I, and what may I do? (decided by the server from my login)
+  const meStatus = React.useRef(0);   // last answer of /me (0 = no answer at all): tells a refused account from a busy server
   const loadMe = useCallback(async (): Promise<boolean> => {
     try {
       const res = await fetchWithTimeout('/api/me', {}, 15000);
+      meStatus.current = res.status;
       if (!res.ok) return false;
       const data = await res.json();
       setUser(data.user);
@@ -34,6 +36,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setMustChange(!!data.user?.mustChangePassword);
       return true;
     } catch {
+      meStatus.current = 0;
       return false;
     }
   }, []);
@@ -48,9 +51,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, password: string): Promise<void> => {
     const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     if (error) throw new Error('Invalid credentials');
-    if (!(await loadMe())) {
+    // a busy server must not look like a wrong password: try the profile a few times before giving up
+    let ok = await loadMe();
+    for (let i = 0; i < 3 && !ok && (meStatus.current === 0 || meStatus.current >= 500); i++) { await new Promise((r) => setTimeout(r, 1500)); ok = await loadMe(); }
+    if (!ok) {
       await supabase.auth.signOut();
-      throw new Error('This account has no access');
+      throw new Error(meStatus.current === 401 || meStatus.current === 403 ? 'This account has no access' : 'PROFILE_BUSY');
     }
   };
 
