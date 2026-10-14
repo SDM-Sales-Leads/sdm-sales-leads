@@ -38,6 +38,22 @@ const AppContent: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const viewMode = useViewMode(user?.id);
 
+  // open a lead from anywhere: the bell, or the link in an e-mail (https://.../#lead=LD-1234, works after sign-in)
+  useEffect(() => {
+    if (!user) return;
+    const open = (id: string) => {
+      if (!id) return;
+      try { localStorage.setItem('selected_lead_id', id); localStorage.setItem('crm_selected_lead_id_from_notification', id); } catch { /* ignore */ }
+      setSelectedTicket(null); setActiveTab('sales-crm'); setCrmSubTab('leads');
+      setTimeout(() => window.dispatchEvent(new CustomEvent('crm-nav', { detail: { kind: 'lead', id } })), 250);
+    };
+    const h = (e: Event) => open(String((e as CustomEvent).detail?.id || ''));
+    window.addEventListener('app-open-lead', h);
+    const m = /#lead=([^&]+)/.exec(window.location.hash);
+    if (m) { try { open(decodeURIComponent(m[1])); window.history.replaceState(null, '', window.location.pathname + window.location.search); } catch { /* ignore */ } }
+    return () => window.removeEventListener('app-open-lead', h);
+  }, [user]);
+
   useEffect(() => {
     if (user) {
       loadTickets();

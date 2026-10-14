@@ -5,6 +5,7 @@
 // `_rev` (the row's updated_at when it was loaded). A save is refused for a row that someone else changed since
 // (409-style "conflicts"), so two people can no longer overwrite each other. Deleting a lead is a soft delete.
 import { syncFacebook } from "./fbsheet.ts";
+import { later, notifyAssigned, notifyChanged, type Assigned, type Changed } from "./notify.ts";
 import {
   admin, asUuid, bad, body, pageAll, can, Caller, clean, crmScope, CrmScope, forbidden, getConfig, HttpError, isAdmin, isObj, logActivity, need,
   needAdmin, needCrm, normEmail, normName, normPhone, nowIso, rateLimit, rid, setConfig, str,
@@ -36,6 +37,25 @@ export interface Spec {
   narrow?: (c: Caller, scope: CrmScope, team: string[]) => ((q: any) => any) | null;
   canWrite?: (c: Caller, scope: CrmScope) => boolean;
   canDelete: (c: Caller, scope: CrmScope) => boolean;
+}
+
+/** who must hear about this save: a new owner ("new lead assigned") and an owner whose lead somebody else changed */
+async function leadNotifications(c: Caller, touched: { id: string; prev: string | null; next: string | null; d: any; fresh: any[] }[], auditRows: any[]) {
+  const assigned: Assigned[] = [], changed: Changed[] = [];
+  for (const t of touched) {
+    const nm = String(t.d?.customerName || "");
+    if (t.next && t.next !== t.prev) {
+      if (t.next !== c.id) assigned.push({ userId: t.next, leadId: t.id, leadName: nm, company: t.d?.companyName, project: t.d?.project, source: t.d?.source, byName: c.name });
+      if (t.prev && t.prev !== c.id) changed.push({ userId: t.prev, leadId: t.id, leadName: nm, byName: c.name, summary: `The lead was reassigned to ${t.d?.assignedSalespersonName || "another person"}.` });
+      continue;
+    }
+    if (!t.next || t.next === c.id) continue;                                   // nobody to tell, or you changed your own lead
+    const bits = auditRows.filter((a) => a.lead_id === t.id && a.action !== "owner" && a.action !== "delete")
+      .map((a) => `${a.action}${a.from_value || a.to_value ? `: ${a.from_value ?? "—"} → ${a.to_value ?? "—"}` : ""}`);
+    for (const e of t.fresh) if (e?.user && e.user !== c.name && e.type !== "Assignment" && e.title) bits.push(String(e.title) + (e.description ? ` — ${String(e.description).slice(0, 120)}` : ""));
+    if (bits.length) changed.push({ userId: t.next, leadId: t.id, leadName: nm, byName: c.name, summary: bits.slice(0, 6).join("; ") });
+  }
+  await Promise.all([notifyAssigned(assigned), notifyChanged(changed)]);
 }
 
 export const SPECS: Record<string, Spec> = {
@@ -150,6 +170,7 @@ for (const [name, spec] of Object.entries(SPECS)) {
     const team = scope === "team" ? await teamIds(c) : [];
     const saved: any[] = [], conflicts: string[] = [], rejected: { id: string; reason: string }[] = [], idMap: Record<string, string> = {};
     const auditRows: any[] = [];
+    const touched: { id: string; prev: string | null; next: string | null; d: any; fresh: any[] }[] = [];   // leads whose owner or content changed (for notifications)
     const audit = (leadId: string, a: { action: string; from?: string; to?: string; note?: string }) =>
       auditRows.push({ lead_id: leadId, actor_id: c.id, actor_name: c.name, action: a.action, from_value: a.from ?? null, to_value: a.to ?? null, note: a.note ?? null });
 
@@ -228,6 +249,7 @@ for (const [name, spec] of Object.entries(SPECS)) {
           if (u.error) throw new Error("update");
           if (!u.data?.length) { conflicts.push(id); continue; }
           saved.push({ id, _rev: u.data[0].updated_at });
+          if (name === "leads") { const had = new Set((ex.data?.timeline || []).map((x: any) => x?.id)); touched.push({ id, prev: ex.assigned_to || null, next: u.data[0].assigned_to || null, d: u.data[0].data || d, fresh: ((u.data[0].data || d).timeline || []).filter((e: any) => e?.id && !had.has(e.id)) }); }
         } else {
           // new row
           if (name === "leads") {
@@ -273,7 +295,10 @@ for (const [name, spec] of Object.entries(SPECS)) {
       const ins = await admin.from(spec.table).insert(newRows.map((n) => n.row)).select("id,updated_at,created_at");
       if (!ins.error) {
         (ins.data || []).forEach((x: any) => saved.push({ id: x.id, _rev: x.updated_at || x.created_at }));
-        if (name === "leads") await ensureContactsAndCompaniesBulk(newRows.map((n) => n.lead)).catch(() => {});
+        if (name === "leads") {
+          await ensureContactsAndCompaniesBulk(newRows.map((n) => n.lead)).catch(() => {});
+          for (const n of newRows) { const as = asUuid(n.lead?.assignedSalespersonId); if (as) touched.push({ id: n.id, prev: null, next: as, d: n.lead, fresh: [] }); }
+        }
       } else {
         // one bad row must not sink the batch: fall back to row-by-row so the culprit is named
         for (const n of newRows) {
@@ -284,6 +309,7 @@ for (const [name, spec] of Object.entries(SPECS)) {
       }
     }
     if (auditRows.length) await admin.from("crm_lead_audit").insert(auditRows.slice(0, 2000));
+    if (name === "leads" && touched.length) later(leadNotifications(c, touched, auditRows));
     return { success: true, saved, conflicts, rejected, idMap };
   });
 }
@@ -322,6 +348,7 @@ route("POST", "/crm/leads/route", async ({ req, c }) => {
   d.timeline = [...(d.timeline || []), { id: rid(), timestamp: now, type: "Assignment", user: "System", title: "Auto Assigned", description: `Lead assigned to ${agent.name} (${q.assignmentMethod}).` }];
   const u = await admin.from("crm_leads").update({ data: d, ...leadColumns(d) }).eq("id", id).is("assigned_to", null).select("*");
   if (!u.data?.length) return { success: true, assigned: false, lead: out(ex) };
+  later(notifyAssigned([{ userId: agent.id, leadId: id, leadName: d.customerName || "", company: d.companyName, project: d.project, source: d.source, byName: "the routing rules" }]));
   return { success: true, assigned: true, lead: out(u.data[0]) };
 });
 

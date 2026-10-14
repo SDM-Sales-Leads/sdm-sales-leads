@@ -154,3 +154,9 @@
 .old-skin .old-top { background:#fff; border-bottom:2px solid #E01E25; height:60px; display:flex; align-items:center; gap:14px; padding:0 26px; position:sticky; top:0; z-index:40; }
 .old-skin .old-title { font-weight:800; font-size:1rem; text-transform:uppercase; letter-spacing:.05em; }
 .old-skin .glass-card, .old-skin .card { backdrop-filter:none; }
+
+
+/* notification bell: unread items glow red, the bell wiggles */
+@keyframes wiggle { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-14deg); } 75% { transform: rotate(14deg); } }
+@keyframes notifGlow { 0%, 100% { box-shadow: inset 3px 0 0 #dc2626, 0 0 0 0 rgba(220, 38, 38, .35); } 50% { box-shadow: inset 3px 0 0 #dc2626, 0 0 0 5px rgba(220, 38, 38, 0); } }
+.notif-unread { animation: notifGlow 1.8s ease-in-out infinite; }

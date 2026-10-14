@@ -2,6 +2,7 @@ import { crmService } from './crm/crmService';
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../services/AuthContext';
 import { Logo } from '../constants';
+import { NotificationBell } from './NotificationBell';
 import { setViewMode } from '../lib/viewMode';
 import { 
   LayoutDashboard, 
@@ -342,6 +343,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <div className="relative p-6 flex flex-col items-center justify-center border-b border-white/10 min-h-[120px]">
+          <div className={`absolute z-20 ${isCollapsed ? 'top-1 left-1/2 -translate-x-1/2' : 'top-3 right-3'}`}><NotificationBell dark /></div>
           <div className="flex flex-col items-center transition-all duration-300">
             <div className={`p-1 transition-all duration-300 ${isCollapsed ? 'scale-75' : 'scale-100'}`}>
               <Logo height={isCollapsed ? "h-12" : "h-24"} />
@@ -428,7 +430,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className={`p-4 border-t border-white/10 transition-all ${isCollapsed ? 'flex flex-col items-center' : ''} relative`}>
           <div className={`flex items-center gap-3 mb-4 ${isCollapsed ? 'justify-center' : 'px-2'}`}>
-            <button
+            <button hidden
               onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
               className="w-10 h-10 rounded-full bg-brand-red flex items-center justify-center font-bold text-lg flex-shrink-0 shadow-lg relative cursor-pointer hover:opacity-90 transition-opacity"
               title="Toggle Notifications"

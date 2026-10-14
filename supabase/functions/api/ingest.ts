@@ -4,6 +4,7 @@ import {
   admin, pageAll, asUuid, getConfig, setConfig, getSecret, HttpError, normEmail, normName, normPhone, nowIso, rid, str, isEmail, tryLock, unlock,
 } from "./lib.ts";
 import { canonicalPark } from "./parks.ts";
+import { later, notifyAssigned } from "./notify.ts";
 import { getBodies, getBody, htmlToText, listFolder, loadEws, MailHead } from "./ews.ts";
 
 export const DEFAULT_QUEUE = {
@@ -434,6 +435,7 @@ export async function createLeadFromParsed(parsed: Parsed, head: MailHead, text:
   const { error } = await admin.from("crm_leads").insert({ id, data: lead, ...leadColumns(lead) });
   if (error) throw new HttpError(500, "Could not save the lead");
   await ensureContactAndCompany(lead);
+  if (agent) later(notifyAssigned([{ userId: agent.id, leadId: id, leadName: lead.customerName || "", company: lead.companyName, project: lead.project, source: lead.source, byName: "the routing rules" }]));
   return lead;
 }
 

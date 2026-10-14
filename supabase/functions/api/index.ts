@@ -8,6 +8,7 @@ import "./routes_crm.ts";
 import "./routes_crm2.ts";
 import "./routes_bd.ts";
 import "./integration.ts";
+import "./routes_notify.ts";
 import { route } from "./router.ts";
 import { ingestInbox } from "./ingest.ts";
 import { syncFacebook } from "./fbsheet.ts";

@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../services/AuthContext';
 import { Logo } from '../constants';
+import { NotificationBell } from './NotificationBell';
 import { crmService } from './crm/crmService';
 import { setViewMode } from '../lib/viewMode';
 import { todayISO } from './crm/leadMetrics';
@@ -122,7 +123,8 @@ export const OldViewShell: React.FC<Props> = ({ activeTab, crmSubTab, go, childr
     <div className="old-skin flex h-screen overflow-hidden" id="old-view-root">
       {open && <div className="fixed inset-0 bg-black/40 z-40 lg:hidden" onClick={() => setOpen(false)} />}
       <aside className={`old-side fixed inset-y-0 left-0 z-50 w-64 flex flex-col transition-transform lg:translate-x-0 lg:static ${open ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="px-5 pt-5 pb-4 border-b border-[#F0F1F3]">
+        <div className="relative px-5 pt-5 pb-4 border-b border-[#F0F1F3]">
+          <div className="absolute top-4 right-3 z-20"><NotificationBell /></div>
           <Logo height="h-10" />
           <div className="mt-2 text-[10.5px] font-bold tracking-[.16em] uppercase text-[#E01E25]">Sales Team CRM</div>
           <button
