@@ -16,11 +16,14 @@ const nameKey = (s: string | undefined | null) => String(s ?? '').trim().toLower
 export interface Tally {
   leads: number; won: number; lost: number; open: number;
   wonValue: number; wonWithValue: number; wonArea: number; pipeline: number; openWithValue: number;
+  /** ids behind the counters (only kept for breakdown rows, so a clicked number can open exactly those leads) */
+  ids?: { leads: string[]; won: string[]; lost: string[]; open: string[] };
 }
-export const emptyTally = (): Tally => ({ leads: 0, won: 0, lost: 0, open: 0, wonValue: 0, wonWithValue: 0, wonArea: 0, pipeline: 0, openWithValue: 0 });
+export const emptyTally = (withIds = false): Tally => ({ leads: 0, won: 0, lost: 0, open: 0, wonValue: 0, wonWithValue: 0, wonArea: 0, pipeline: 0, openWithValue: 0, ...(withIds ? { ids: { leads: [], won: [], lost: [], open: [] } } : {}) });
 /** won counts only when its closing day is in the window (all time = always), exactly like the Sales Reports page */
 export function tallyAdd(t: Tally, p: P, r: Range, allTime: boolean) {
-  t.leads++;
+  t.leads++; t.ids?.leads.push(p.id);
+  if (t.ids) { if (p.won && (allTime || inR(p.closing, r))) t.ids.won.push(p.id); if (p.lost) t.ids.lost.push(p.id); if (p.open) t.ids.open.push(p.id); }
   if (p.won && (allTime || inR(p.closing, r))) { t.won++; t.wonValue += p.value; t.wonArea += p.area; if (p.value > 0) t.wonWithValue++; }
   if (p.lost) t.lost++;
   if (p.open) { t.open++; if (p.value > 0) { t.pipeline += p.value; t.openWithValue++; } }
@@ -37,7 +40,7 @@ export function groupBy(pool: P[], r: Range, allTime: boolean, keyOf: (p: P) => 
   for (const p of pool) {
     const k = keyOf(p);
     let g = m.get(k);
-    if (!g) { g = { key: k, label: k, t: emptyTally() }; m.set(k, g); }
+    if (!g) { g = { key: k, label: k, t: emptyTally(true) }; m.set(k, g); }
     tallyAdd(g.t, p, r, allTime);
   }
   return [...m.values()];
@@ -146,15 +149,15 @@ export function trendOf(pool: P[], r: Range, allTime: boolean, today: string, un
 // ---------------------------------------------------------------------------------------------
 // Win / loss
 // ---------------------------------------------------------------------------------------------
-export interface LostRow { key: string; n: number; value: number; withValue: number; area: number }
+export interface LostRow { key: string; n: number; value: number; withValue: number; area: number  ids?: string[]; }
 export function lostAnalysis(pool: P[]) {
   const reasons = new Map<string, LostRow>(); const stage = [0, 0, 0, 0, 0, 0]; const owners = new Map<string, { key: string; n: number }>();
   let lost = 0;
   for (const p of pool) {
     if (!p.lost) continue;
     lost++;
-    let e = reasons.get(p.reason); if (!e) { e = { key: p.reason, n: 0, value: 0, withValue: 0, area: 0 }; reasons.set(p.reason, e); }
-    e.n++; if (p.value > 0) { e.value += p.value; e.withValue++; }
+    let e = reasons.get(p.reason); if (!e) { e = { key: p.reason, n: 0, value: 0, withValue: 0, area: 0, ids: [] }; reasons.set(p.reason, e); }
+    e.n++; e.ids?.push(p.id); if (p.value > 0) { e.value += p.value; e.withValue++; }
     e.area += Number(p.l.requiredSize) > 0 ? Number(p.l.requiredSize) : 0;
     stage[p.level]++;
     if (p.owner) { const o = owners.get(p.owner) || { key: p.ownerName || p.owner, n: 0 }; o.n++; owners.set(p.owner, o); }

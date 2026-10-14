@@ -6,6 +6,8 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 import type { SalespersonActivity } from './types';
 import { P, Range, fmtDay, fmtEGP, fmtPct, pc } from './leadMetrics';
 import { BarRow, Card, Kpi, Pill } from './CrmMetricsUi';
+import { crmNav } from './crmNav';
+import { DrillNum } from './DrillNum';
 import { DataTable, Column, ExportBar, MiniBar, TD, TH, fmtHours, num } from './ReportParts';
 import {
   Group, Tally, TrendUnit, activityIndex, agingOf, avgDealOf, byLeadsDesc, channelReport, convOf, decidedWinOf, forecastOf,
@@ -24,9 +26,9 @@ const P0 = 'Leads of the period = lead date inside the window, plus deals won in
 
 const tallyCols = (first: string): Column<Group>[] => [
   { id: 'k', head: first, sort: (g) => g.label, cell: (g) => <span className="font-bold max-w-[220px] truncate inline-block align-bottom" title={g.label}>{g.label}</span> },
-  { id: 'leads', head: 'Leads', right: true, sort: (g) => g.t.leads, cell: (g) => num(g.t.leads) },
-  { id: 'won', head: 'Won', right: true, sort: (g) => g.t.won, cell: (g) => <span className="text-emerald-700">{num(g.t.won)}</span> },
-  { id: 'lost', head: 'Lost', info: 'Lost, Not Interested and Low Budget.', right: true, sort: (g) => g.t.lost, cell: (g) => num(g.t.lost) },
+  { id: 'leads', head: 'Leads', right: true, sort: (g) => g.t.leads, cell: (g) => <DrillNum n={g.t.leads} ids={g.t.ids?.leads} title={`${g.label} · Leads`} /> },
+  { id: 'won', head: 'Won', right: true, sort: (g) => g.t.won, cell: (g) => <DrillNum n={g.t.won} ids={g.t.ids?.won} title={`${g.label} · Won`} className="text-emerald-700" /> },
+  { id: 'lost', head: 'Lost', info: 'Lost, Not Interested and Low Budget.', right: true, sort: (g) => g.t.lost, cell: (g) => <DrillNum n={g.t.lost} ids={g.t.ids?.lost} title={`${g.label} · Lost`} /> },
   { id: 'conv', head: 'Conversion', info: 'Won ÷ leads of this row (open leads included).', right: true, sort: (g) => convOf(g.t), cell: (g) => <Pill v={convOf(g.t)} good={5} ok={1} dp={1} /> },
   { id: 'dec', head: 'Win rate (decided)', info: 'Won ÷ (won + lost). Leads still open are left out, so a young period is not punished.', right: true, sort: (g) => decidedWinOf(g.t), cell: (g) => <Pill v={decidedWinOf(g.t)} good={30} ok={15} dp={0} /> },
   { id: 'val', head: 'Won value', right: true, sort: (g) => (g.t.wonWithValue ? g.t.wonValue : null), cell: (g) => (g.t.wonWithValue ? fmtEGP(g.t.wonValue) : '—') },
@@ -76,7 +78,7 @@ export const FunnelAgingTab: React.FC<{ c: ReportCtx }> = ({ c }) => {
         <Card title="Where the leads are now" info={`${P0}Current status of each lead. Value only for leads that carry a deal value.`}>
           <DataTable rows={mix} rowKey={(m) => m.status} limit={20} cols={[
             { id: 's', head: 'Status', sort: (m) => m.status, cell: (m) => <span className="font-bold">{m.status}</span> },
-            { id: 'n', head: 'Leads', right: true, sort: (m) => m.n, cell: (m) => num(m.n) },
+            { id: 'n', head: 'Leads', right: true, sort: (m) => m.n, cell: (m) => <DrillNum n={m.n} ids={c.pool.filter((p) => p.l.status === m.status).map((p) => p.id)} title={`Status: ${m.status}`} /> },
             { id: 'p', head: '%', right: true, cell: (m) => fmtPct(pc(m.n, c.pool.length)) },
             { id: 'v', head: 'Value', right: true, sort: (m) => (m.withValue ? m.value : null), cell: (m) => (m.withValue ? fmtEGP(m.value) : '—') },
           ]} defaultSort={{ id: 'n', dir: 'desc' }} />
@@ -181,7 +183,7 @@ export const WinLossTab: React.FC<{ c: ReportCtx }> = ({ c }) => {
             <>
               <DataTable rows={L.reasons} rowKey={(r) => r.key} limit={15} cols={[
                 { id: 'r', head: 'Reason', sort: (r) => r.key, cell: (r) => <span className="font-bold">{r.key}</span> },
-                { id: 'n', head: 'Leads', right: true, sort: (r) => r.n, cell: (r) => r.n },
+                { id: 'n', head: 'Leads', right: true, sort: (r) => r.n, cell: (r) => <DrillNum n={r.n} ids={r.ids} title={`Lost: ${r.key}`} /> },
                 { id: 'p', head: '% of lost', right: true, sort: (r) => r.n, cell: (r) => fmtPct(pc(r.n, L.lost)) },
                 { id: 'v', head: 'Value', right: true, sort: (r) => (r.withValue ? r.value : null), cell: (r) => (r.withValue ? fmtEGP(r.value) : '—') },
                 { id: 'a', head: 'Area asked', right: true, sort: (r) => r.area || null, cell: (r) => (r.area ? `${num(r.area)} sqm` : '—') },
@@ -295,18 +297,18 @@ export const DemandTab: React.FC<{ c: ReportCtx }> = ({ c }) => {
     <div className="space-y-6">
       <Card title="Project demand" info={`${P0}Project name after fixing typos; 'Not recorded' = none usable. Won value = deals closed in the window. Median size = median of the required area typed on those leads (only leads that have one).`}
         right={<ExportBar name="project-demand" sheets={() => [{ name: 'Projects', rows: [['Project', ...TALLY_HEAD, 'Median required size (sqm)'], ...prj.map((g) => [...tallyRow(g), med(g.sizes) ?? ''])] }]} disabled={!prj.length} />}>
-        <div className="space-y-2">{prj.slice(0, 10).map((g) => <BarRow key={g.key} label={g.label} value={g.t.leads} max={maxP} right={`${num(g.t.leads)} · ${g.t.won} won`} />)}</div>
+        <div className="space-y-2">{prj.slice(0, 10).map((g) => <BarRow key={g.key} onClick={() => crmNav.leads({ ids: g.t.ids?.leads || [], title: `${g.label} · Leads` })} label={g.label} value={g.t.leads} max={maxP} right={`${num(g.t.leads)} · ${g.t.won} won`} />)}</div>
         <DataTable rows={prj} rowKey={(g) => g.key} limit={20} cols={[...(tallyCols('Project') as Column<PG>[]), { id: 'med', head: 'Median size', info: 'Median required area on the leads of this project (leads with an area only).', right: true, sort: (g) => med(g.sizes), cell: (g) => { const m = med(g.sizes); return m == null ? '—' : `${num(m)} sqm`; } }] as Column<PG>[]} defaultSort={{ id: 'leads', dir: 'desc' }} />
       </Card>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card title="Plot-size demand" info={`${P0}Required area typed on the lead, in bands. 'Size not recorded' = none typed. Won value = deals closed in the window.`}
           right={<ExportBar name="plot-size-demand" sheets={() => [{ name: 'Plot size', rows: [['Required size', ...TALLY_HEAD], ...sz.map(tallyRow)] }]} disabled={!sz.length} />}>
-          <div className="space-y-2">{sz.map((g) => <BarRow key={g.key} label={g.label} value={g.t.leads} max={maxS} color={g.key === 'Size not recorded' ? '#9E9E9E' : '#D32F2F'} right={`${num(g.t.leads)} · ${g.t.won} won`} />)}</div>
+          <div className="space-y-2">{sz.map((g) => <BarRow key={g.key} onClick={() => crmNav.leads({ ids: g.t.ids?.leads || [], title: `${g.label} · Leads` })} label={g.label} value={g.t.leads} max={maxS} color={g.key === 'Size not recorded' ? '#9E9E9E' : '#D32F2F'} right={`${num(g.t.leads)} · ${g.t.won} won`} />)}</div>
           <DataTable rows={sz} rowKey={(g) => g.key} cols={tallyCols('Required size').filter((x) => ['k', 'leads', 'won', 'conv', 'val'].includes(x.id))} />
         </Card>
         <Card title="Industry" info={`${P0}Industry typed on the lead (spelling / capital letters merged). 'Not recorded' = none typed.`}
           right={<ExportBar name="industry" sheets={() => [{ name: 'Industry', rows: [['Industry', ...TALLY_HEAD], ...ind.map(tallyRow)] }]} disabled={!ind.length} />}>
-          <div className="space-y-2">{ind.slice(0, 10).map((g) => <BarRow key={g.key} label={g.label} value={g.t.leads} max={maxI} color="#1976D2" right={`${num(g.t.leads)} · ${g.t.won} won`} />)}</div>
+          <div className="space-y-2">{ind.slice(0, 10).map((g) => <BarRow key={g.key} onClick={() => crmNav.leads({ ids: g.t.ids?.leads || [], title: `${g.label} · Leads` })} label={g.label} value={g.t.leads} max={maxI} color="#1976D2" right={`${num(g.t.leads)} · ${g.t.won} won`} />)}</div>
           <DataTable rows={ind} rowKey={(g) => g.key} limit={15} cols={tallyCols('Industry').filter((x) => ['k', 'leads', 'won', 'conv', 'val'].includes(x.id))} defaultSort={{ id: 'leads', dir: 'desc' }} />
         </Card>
       </div>

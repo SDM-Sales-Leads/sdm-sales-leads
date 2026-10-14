@@ -1,3 +1,4 @@
+import { crmNav } from './crmNav';
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Contact, Lead, ContactEditLog } from './types';
 import { crmService, normalizePhone } from './crmService';
@@ -78,7 +79,10 @@ const ContactRow = React.memo<ContactRowProps>(({ c, agg, latestLeadId, cols, is
       {cols.company && <td className="py-3 px-3 font-semibold text-brand-black">{c.company || <span className="text-brand-gray font-medium">Private</span>}</td>}
       {cols.phone && <td className="py-3 px-3 font-mono text-brand-gray whitespace-nowrap">{dashv(c.phoneNumber)}</td>}
       {cols.email && <td className="py-3 px-3 text-brand-gray truncate max-w-[180px]">{dashv(c.email)}</td>}
-      {cols.leads && <td className="py-3 px-3 text-center"><span className="bg-brand-gray/10 text-brand-black px-2 py-0.5 rounded-full font-mono text-[10px] font-bold">{agg.total}</span></td>}
+      {cols.leads && <td className="py-3 px-3 text-center">{agg.total > 0 ? (
+        <button type="button" title="Click to open this customer's leads" className="bg-brand-gray/10 hover:bg-brand-red/10 hover:text-brand-red text-brand-black px-2 py-0.5 rounded-full font-mono text-[10px] font-bold underline decoration-dotted underline-offset-2"
+          onClick={(e) => { e.stopPropagation(); crmNav.leads({ search: c.phoneNumber || c.email || c.name, title: `Leads of ${c.name}` }); }}>{agg.total}</button>
+      ) : <span className="bg-brand-gray/10 text-brand-black px-2 py-0.5 rounded-full font-mono text-[10px] font-bold">{agg.total}</span>}</td>}
       {cols.open && <td className="py-3 px-3 text-center"><span className={`px-2 py-0.5 rounded-full font-mono text-[10px] font-bold ${agg.open ? 'bg-blue-50 text-blue-700' : 'text-brand-gray'}`}>{agg.open}</span></td>}
       {cols.won && <td className="py-3 px-3 text-right font-mono text-[11px] font-bold text-emerald-700 whitespace-nowrap">{agg.won ? `${fmtEgp(agg.wonValue)} (${agg.won})` : '—'}</td>}
       {cols.last && <td className="py-3 px-3 font-mono text-brand-gray whitespace-nowrap">{dashv(agg.lastActivity)}</td>}
