@@ -54,7 +54,7 @@ export const PROJECTS = ['Industria October', 'Industria Sokhna', 'Industria Ash
 export const QUALIFICATIONS = ['Qualified', 'Unqualified'];
 export const TEMPERATURES = ['Hot', 'Warm', 'Cold'];
 export const LOST_CATEGORIES = ['Price', 'Not Interested', 'Competitor', 'Location'];
-export const LOST_REASONS_TEAM = ['Low Budget', 'Need More Time', 'Need Small Area', 'Need Large Area', 'Collecting Information', 'Industry Not Available', 'Lack of Utilities', 'Not Interested', 'Broker', 'Bought From Another Developer', 'Bought From IDA', 'Bought From SCZone'];
+export const LOST_REASONS_TEAM = ['Low Budget', 'Need More Time', 'Need Small Area', 'Need Large Area', 'Collecting Information', 'Industry Not Available', 'Lack of Utilities', 'Not Interested', 'Broker', 'Bought From Another Developer', 'Bought From IDA', 'Bought From SCZone', 'Different Location', 'Plot Sold Out'];
 
 const SOURCE_ALIASES: Record<string, string> = {
   'business development': 'BD Research', bd: 'BD Research',

@@ -3,6 +3,7 @@ import { Lead } from './types';
 import { Printer } from 'lucide-react';
 import { crmService } from './crmService';
 import { ExportBar } from './ReportParts';
+import { MarketingTab } from './CrmReportsMarketing';
 import { ChannelsTab, DemandTab, ForecastTab, FunnelAgingTab, ReportCtx, ServiceTab, TrendTab, WinLossTab } from './CrmReportsExtra';
 import { activityIndex, convOf, decidedWinOf, firstActionMs, slaResult, tallyAdd, emptyTally } from './reportsEngine';
 import { useAuth } from '../../services/AuthContext';
@@ -19,11 +20,12 @@ interface CrmReportsProps {
 
 const CrmLbActivity = lazy(() => import('./CrmLbActivity').then((m) => ({ default: m.CrmLbActivity })));
 const CrmTeamPerformance = lazy(() => import('./CrmTeamPerformance').then((m) => ({ default: m.CrmTeamPerformance })));
-type Tab = 'overview' | 'funnel' | 'trend' | 'winloss' | 'channels' | 'demand' | 'service' | 'forecast' | 'team' | 'lbactivity';
+type Tab = 'overview' | 'funnel' | 'trend' | 'winloss' | 'channels' | 'demand' | 'service' | 'forecast' | 'team' | 'lbactivity' | 'marketing';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' }, { id: 'funnel', label: 'Funnel & aging' }, { id: 'trend', label: 'Leads over time' }, { id: 'winloss', label: 'Win / loss' },
   { id: 'channels', label: 'Channels & sources' }, { id: 'demand', label: 'Projects & demand' }, { id: 'service', label: 'Response & follow-up' },
   { id: 'forecast', label: 'Closing forecast' }, { id: 'team', label: 'Team performance' }, { id: 'lbactivity', label: 'Land Bank activity' },
+  { id: 'marketing', label: 'Marketing lists' },
 ];
 
 const TH = 'py-2 px-2 text-[10px] uppercase text-brand-gray font-bold tracking-wide';
@@ -150,6 +152,7 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
 
       {tab === 'funnel' && <FunnelAgingTab c={ctx} />}
       {tab === 'trend' && <TrendTab c={ctx} />}
+      {tab === 'marketing' && <MarketingTab c={ctx} />}
       {tab === 'winloss' && <WinLossTab c={ctx} />}
       {tab === 'channels' && <ChannelsTab c={ctx} />}
       {tab === 'demand' && <DemandTab c={ctx} />}
