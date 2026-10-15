@@ -120,6 +120,7 @@ async function pull(kind: Kind): Promise<any[] | null> {
   try {
     const t0 = Date.now();
     const res = await fetch(`/api/crm/${kind}`);
+    if (res.status === 403) { lastFull[kind] = Date.now(); return []; }   // this role may not see this list (e.g. the mail log): that is an empty list, not a failed load
     if (!res.ok) return null;
     const rows = await res.json();
     if (!Array.isArray(rows)) return null;
