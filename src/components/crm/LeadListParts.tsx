@@ -29,7 +29,10 @@ export const LeadRow = React.memo(({ lead: l, selected, cols, canAssign, winRate
   const has = (k: string) => cols.includes(k);
   const sla = l.slaDeadline ? getSlaStatus(l) : null;
   return (
-    <tr className={`hover:bg-brand-gray/5 transition-all ${selected ? 'bg-brand-red/5' : ''}`}>
+    <tr
+      className={`hover:bg-brand-gray/5 transition-all cursor-pointer ${selected ? 'bg-brand-red/5' : ''}`}
+      onClick={(e) => { if ((e.target as HTMLElement).closest('button,a,input,select,textarea,label')) return; onOpen(l); }}
+    >
       <td className="py-3.5 px-4">
         <button onClick={() => onSelect(l.id)} aria-label={`Select lead ${l.id}`} className="focus:outline-none">
           {selected ? <CheckSquare size={16} className="text-brand-red" /> : <Square size={16} className="text-brand-gray/60" />}

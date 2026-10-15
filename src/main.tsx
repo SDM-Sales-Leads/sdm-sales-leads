@@ -19,6 +19,9 @@ window.addEventListener('vite:preloadError', (e) => {
 
 import App from './App.tsx';
 import './index.css';
+import { initLang } from './i18n/lang';
+
+initLang();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

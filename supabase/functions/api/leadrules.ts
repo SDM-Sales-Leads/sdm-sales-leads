@@ -11,6 +11,8 @@ export const TEAM_STATUSES = [
 ];
 export const LEGACY_STATUSES = ["Assigned", "Contacted", "Follow Up", "Meeting Scheduled", "Quotation Sent", "Waiting Customer", "Duplicate", "Invalid", "No Answer", "Closed"];
 export const ALL_STATUSES = new Set([...TEAM_STATUSES, ...LEGACY_STATUSES]);
+/** statuses the administrator added in Settings > Dropdown lists (filled by routes_crm from system_config) */
+export const CUSTOM_STATUSES = new Set<string>();
 
 /** fields only Sales Operation / admin may change on an existing lead (identity and origin of the lead) */
 export const PROTECTED_FOR_REPS = ["source", "channel", "phoneNumber", "email", "date", "priority", "legacyId", "legacyOwnerName", "srcOriginal", "contract"];
@@ -48,7 +50,7 @@ export interface Sanitized { data: any; error?: string; audits: { action: string
 export function sanitizeLead(d: any, ex: any | null, c: Caller, scope: CrmScope, assigneeName?: string): Sanitized {
   const audits: Sanitized["audits"] = [];
   if (JSON.stringify(d).length > 400_000) return { data: d, error: "this lead is too large to save", audits };
-  if (d.status && !ALL_STATUSES.has(d.status)) return { data: d, error: `unknown status "${String(d.status).slice(0, 40)}"`, audits };
+  if (d.status && !ALL_STATUSES.has(d.status) && !CUSTOM_STATUSES.has(d.status)) return { data: d, error: `unknown status "${String(d.status).slice(0, 40)}"`, audits };
   // plots assigned to the lead and the recommend / manual preference: owner and managers edit them like other lead fields
   const oldPlots = JSON.stringify((ex?.data || {}).assignedPlots || []);
   if (d.assignedPlots !== undefined) d.assignedPlots = cleanAssignedPlots(d.assignedPlots);

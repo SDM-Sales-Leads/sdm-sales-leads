@@ -160,3 +160,8 @@
 @keyframes wiggle { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-14deg); } 75% { transform: rotate(14deg); } }
 @keyframes notifGlow { 0%, 100% { box-shadow: inset 3px 0 0 #dc2626, 0 0 0 0 rgba(220, 38, 38, .35); } 50% { box-shadow: inset 3px 0 0 #dc2626, 0 0 0 5px rgba(220, 38, 38, 0); } }
 .notif-unread { animation: notifGlow 1.8s ease-in-out infinite; }
+
+/* Arabic: a font stack that has Arabic letters; the layout mirrors through dir="rtl" */
+html.lang-ar body, html.lang-ar .old-skin { font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", "Geeza Pro", system-ui, sans-serif; }
+html.lang-ar th, html.lang-ar td { text-align: start; }
+html.lang-ar .font-mono { direction: ltr; unicode-bidi: embed; }

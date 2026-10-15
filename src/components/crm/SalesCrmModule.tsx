@@ -1,6 +1,7 @@
 import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useAuth } from '../../services/AuthContext';
 import { crmService } from './crmService';
+import { loadLists } from './leadConfig';
 import { adminService } from '../../services/adminService';
 import { Lead, Contact, Company, EmailImportLog } from './types';
 import { toast } from 'sonner';
@@ -63,6 +64,16 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
   const [localActiveSubTab, localSetActiveSubTab] = useState('dashboard');
   const activeSubTab = propActiveSubTab || localActiveSubTab;
   const setActiveSubTab = propSetActiveSubTab || localSetActiveSubTab;
+
+  // the dropdown lists the admin edits (Settings > Dropdown Lists): fetched once; when they changed, the screens are rebuilt with the new values
+  const [listsVer, setListsVer] = useState(0);
+  useEffect(() => {
+    let off = false;
+    void loadLists().then((changed) => { if (changed && !off) setListsVer((v) => v + 1); });
+    const again = () => setListsVer((v) => v + 1);
+    window.addEventListener('crm-lists-changed', again);
+    return () => { off = true; window.removeEventListener('crm-lists-changed', again); };
+  }, []);
 
   // a number or ID clicked on any screen (see crmNav.ts): jump to the record or to the filtered list
   useEffect(() => {
@@ -169,7 +180,7 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
   ];
 
   return (
-    <div className="space-y-6" id="sales-crm-module-root">
+    <div className="space-y-6" id="sales-crm-module-root" key={listsVer}>
       {/* Sub-Header Tabs removed in favor of Sidebar sub-navigation as requested */}
 
       {/* Render active sub component */}

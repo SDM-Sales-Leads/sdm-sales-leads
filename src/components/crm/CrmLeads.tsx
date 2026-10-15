@@ -7,6 +7,7 @@ import { crmService, normalizePhone } from './crmService';
 import {
   INDUSTRIES, NO_CHANNEL, channelOf, LOST_CATEGORIES, LOST_REASONS_TEAM, PRIORITIES, SOURCES, STATUS_GROUPS, LEGACY_STATUSES, isOpenStatus, leadScore, normSource, phoneIntl, statusStage,
 } from './leadConfig';
+import { statusAfterAction, REQ_FOLLOWUP } from './leadConfig';
 import { KanbanKey, LeadAuth, addDaysISO, withSideEffects, kanbanBucket, neglectInfo, prioKey, priorityClass, statusClass, todayISO } from './leadRules';
 import { fmtSize, formatLeadDateTime, getSlaStatus, isSlaAtRisk, localISO } from './leadView';
 import { KanbanCard, LeadRow, PAGE_SIZES, PageSize, PagerBar, ALL_CHUNK } from './LeadListParts';
@@ -115,6 +116,27 @@ interface CrmLeadsProps {
   currentRole: string; // From parent settings switcher
   setActiveSubTab: (tab: string) => void;
 }
+
+type SortKind = 'text' | 'num' | 'date' | 'rank';
+const SORT_KIND: Record<string, SortKind> = { id: 'num', date: 'date', customerName: 'text', project: 'text', requiredSize: 'num', slaDeadline: 'date', priority: 'rank', status: 'rank', assignedSalespersonName: 'text', channel: 'text', source: 'text' };
+const SORT_WORDS: Record<SortKind, [string, string]> = { text: ['A → Z', 'Z → A'], num: ['Small → Large', 'Large → Small'], date: ['Oldest → Newest', 'Newest → Oldest'], rank: ['First → Last', 'Last → First'] };
+/** a table header that shows how the list is sorted and lets the user pick the direction */
+const SortTh: React.FC<{ field: string; label: string; sortField: string; dir: 'asc' | 'desc'; onToggle: () => void; onSet: (d: 'asc' | 'desc') => void; right?: boolean }> = ({ field, label, sortField, dir, onToggle, onSet, right }) => {
+  const kind = SORT_KIND[field] || 'text';
+  const on = sortField === field;
+  return (
+    <th className={`py-3 px-3 cursor-pointer select-none ${right ? 'text-right' : ''}`} onClick={onToggle} aria-sort={on ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <span className={`inline-flex items-center gap-1 ${right ? 'flex-row-reverse' : ''}`}>
+        <span className={on ? 'text-brand-red' : ''}>{label}</span>
+        <span className="inline-flex flex-col leading-none" onClick={(e) => e.stopPropagation()}>
+          <button type="button" title={`Sort ${SORT_WORDS[kind][0]}`} onClick={() => onSet('asc')} className={`px-0.5 ${on && dir === 'asc' ? 'text-brand-red' : 'text-brand-gray/40 hover:text-brand-black'}`}><ChevronUp size={11} strokeWidth={3} /></button>
+          <button type="button" title={`Sort ${SORT_WORDS[kind][1]}`} onClick={() => onSet('desc')} className={`px-0.5 -mt-1 ${on && dir === 'desc' ? 'text-brand-red' : 'text-brand-gray/40 hover:text-brand-black'}`}><ChevronDown size={11} strokeWidth={3} /></button>
+        </span>
+        {on && <span className="text-[9px] font-bold normal-case tracking-normal text-brand-red bg-brand-red/10 rounded px-1 whitespace-nowrap">{SORT_WORDS[kind][dir === 'asc' ? 0 : 1]}</span>}
+      </span>
+    </th>
+  );
+};
 
 export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, currentRole, setActiveSubTab }) => {
   const { user, permissions } = useAuth();
@@ -375,15 +397,16 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
     }
   }, [leads]);
 
-  // Handle column sort
+  // Handle column sort: a click on the header toggles; the two arrows pick the direction directly
   const handleSort = (field: keyof Lead) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
     } else {
       setSortField(field);
-      setSortDirection('desc');
+      setSortDirection(SORT_KIND[field as string] === 'text' ? 'asc' : 'desc');
     }
   };
+  const setSort = (field: keyof Lead, dir: 'asc' | 'desc') => { setSortField(field); setSortDirection(dir); };
 
   // Reset all filters
   const resetFilters = () => {
@@ -1101,38 +1124,24 @@ ${user.name || ''}`);
         // Transition status on contact; never reopen or move closed leads. Team statuses where one fits.
         let nextStatus = l.status as LeadStatus;
         const patch: Partial<Lead> = { lastContactDate: todayISO() };
-        const early = ['New', 'Assigned'].includes(l.status);
         if (isOpenStatus(l.status)) {
-          if (interactionType === 'call') {
-            if (callOutcome === 'Asked to Call Back') {
-              nextStatus = 'Client Will Call Back';
-              patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2);
-            } else if (callOutcome === 'Not Interested') {
-              // 'Lost' needs category + reason (Lost dialog); a call outcome records 'Not Interested' instead
-              nextStatus = 'Not Interested';
-              patch.lostReason = 'Not Interested';
-              patch.lostComment = interactionNotes.trim() || 'Customer not interested (call outcome).';
-            } else if (callOutcome === 'Wrong Number') {
-              nextStatus = 'Wrong Number';
-            } else if (callOutcome === 'Contacted' && early) {
-              nextStatus = 'Contacted';
-            }
-          } else if (interactionType === 'whatsapp') {
-            if (early) { nextStatus = 'Sent WhatsApp'; patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2); }
-          } else if (interactionType === 'email') {
-            if (early) { nextStatus = 'Mail Sent'; patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2); }
-          } else if (interactionType === 'meeting') {
-            if (statusStage(l.status) === 'active') {
-              nextStatus = 'Scheduled Meeting';
-              patch.meetingDate = interactionDate;
-              patch.meetingTime = interactionTime;
-              patch.nextFollowUpDate = interactionDate;
-              if (!String(l.notes || '').trim()) patch.notes = interactionNotes.trim() || `Meeting on ${interactionDate} ${interactionTime}${interactionLocation ? ` at ${interactionLocation}` : ''}`;
-            }
-          } else if (interactionType === 'follow-up') {
+          const moved = statusAfterAction(l.status, interactionType as any, callOutcome);
+          if (moved) nextStatus = moved as LeadStatus;
+          if (interactionType === 'call' && callOutcome === 'Not Interested' && moved) {
+            // 'Lost' needs category + reason (Lost dialog); a call outcome records 'Not Interested' instead
+            patch.lostReason = 'Not Interested';
+            patch.lostComment = interactionNotes.trim() || 'Customer not interested (call outcome).';
+          }
+          if (moved && REQ_FOLLOWUP.includes(moved)) patch.nextFollowUpDate = l.nextFollowUpDate || addDaysISO(2);
+          if ((interactionType === 'meeting' || interactionType === 'visit') && moved) {
+            patch.meetingDate = interactionDate;
+            patch.meetingTime = interactionTime;
+            patch.nextFollowUpDate = interactionDate;
+            if (!String(l.notes || '').trim()) patch.notes = interactionNotes.trim() || `Meeting on ${interactionDate} ${interactionTime}${interactionLocation ? ` at ${interactionLocation}` : ''}`;
+          }
+          if (interactionType === 'follow-up') {
             patch.nextFollowUpDate = interactionDate;
             patch.nextFollowUpTime = interactionTime;
-            if (early) nextStatus = 'Follow Up';
           }
         }
 
@@ -1269,13 +1278,12 @@ ${user.name || ''}`);
     };
 
     // New / Assigned -> "Sent WhatsApp" with a follow-up in 2 days (that status needs a next follow-up date)
-    const early = selectedLead.status === 'Assigned' || selectedLead.status === 'New';
-
     const updatedLeads = crmService.getLeads().map(l => {
       if (l.id === selectedLead.id) {
+        const moved = statusAfterAction(l.status, 'whatsapp');
         const merged: Lead = {
           ...l,
-          ...(early ? { status: 'Sent WhatsApp' as LeadStatus, nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2) } : {}),
+          ...(moved ? { status: moved as LeadStatus, nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2) } : {}),
           lastContactDate: todayISO(),
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), timelineEvent]
@@ -1350,13 +1358,12 @@ ${user.name || ''}`);
     };
 
     // New / Assigned -> "Mail Sent" with a follow-up in 2 days
-    const early = selectedLead.status === 'Assigned' || selectedLead.status === 'New';
-
     const updatedLeads = crmService.getLeads().map(l => {
       if (l.id === selectedLead.id) {
+        const moved = statusAfterAction(l.status, 'email');
         const merged: Lead = {
           ...l,
-          ...(early ? { status: 'Mail Sent' as LeadStatus, nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2) } : {}),
+          ...(moved ? { status: moved as LeadStatus, nextFollowUpDate: l.nextFollowUpDate || addDaysISO(2) } : {}),
           lastContactDate: todayISO(),
           lastUpdated: new Date().toISOString(),
           timeline: [...(l.timeline || []), timelineEvent]
@@ -1819,18 +1826,18 @@ ${user.name || ''}`);
                       {pageAllSelected ? <CheckSquare size={16} className="text-brand-red" /> : <Square size={16} />}
                     </button>
                   </th>
-                  {columns.id && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('id')}>Lead ID</th>}
-                  {columns.date && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('date')}>Date</th>}
-                  {columns.customer && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('customerName')}>Customer</th>}
-                  {columns.project && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('project')}>Project</th>}
-                  {columns.size && <th className="py-4 px-3 cursor-pointer text-right" onClick={() => handleSort('requiredSize')}>Size</th>}
-                  {columns.slaStatus && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('slaDeadline')}>SLA Status</th>}
-                  {columns.priority && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('priority')}>Priority</th>}
+                  {columns.id && <SortTh field="id" label="Lead ID" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('id' as any)} onSet={(d) => setSort('id' as any, d)} />}
+                  {columns.date && <SortTh field="date" label="Date" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('date' as any)} onSet={(d) => setSort('date' as any, d)} />}
+                  {columns.customer && <SortTh field="customerName" label="Customer" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('customerName' as any)} onSet={(d) => setSort('customerName' as any, d)} />}
+                  {columns.project && <SortTh field="project" label="Project" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('project' as any)} onSet={(d) => setSort('project' as any, d)} />}
+                  {columns.size && <SortTh field="requiredSize" label="Size" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('requiredSize' as any)} onSet={(d) => setSort('requiredSize' as any, d)} right />}
+                  {columns.slaStatus && <SortTh field="slaDeadline" label="SLA Status" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('slaDeadline' as any)} onSet={(d) => setSort('slaDeadline' as any, d)} />}
+                  {columns.priority && <SortTh field="priority" label="Priority" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('priority' as any)} onSet={(d) => setSort('priority' as any, d)} />}
                   {columns.score && <th className="py-4 px-3">Score</th>}
-                  {columns.status && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('status')}>Funnel Status</th>}
-                  {columns.assigned && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('assignedSalespersonName')}>Assigned Agent</th>}
-                  {columns.channel && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('channel')}>Channel</th>}
-                  {columns.leadSource && <th className="py-4 px-3 cursor-pointer" onClick={() => handleSort('source')}>Lead Source</th>}
+                  {columns.status && <SortTh field="status" label="Funnel Status" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('status' as any)} onSet={(d) => setSort('status' as any, d)} />}
+                  {columns.assigned && <SortTh field="assignedSalespersonName" label="Assigned Agent" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('assignedSalespersonName' as any)} onSet={(d) => setSort('assignedSalespersonName' as any, d)} />}
+                  {columns.channel && <SortTh field="channel" label="Channel" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('channel' as any)} onSet={(d) => setSort('channel' as any, d)} />}
+                  {columns.leadSource && <SortTh field="source" label="Lead Source" sortField={sortField as string} dir={sortDirection} onToggle={() => handleSort('source' as any)} onSet={(d) => setSort('source' as any, d)} />}
                   {columns.customerId && <th className="py-4 px-3">Customer ID</th>}
                   <th className="py-4 px-4 text-right w-20">Actions</th>
                 </tr>

@@ -30,6 +30,28 @@ export function statusStage(s: string): Stage {
   if (PIPELINE_STATUSES.includes(s)) return 'pipeline';
   return 'active';
 }
+/**
+ * The status a logged action moves a lead to (null = leave it). Closed leads are never reopened. A call, WhatsApp or e-mail
+ * moves leads that are still in "New / contact attempt"; a lead already in the sales pipeline (offer, meeting, negotiation)
+ * keeps its status. A meeting or site visit can also move a lead out of the pipeline's earlier steps.
+ */
+export type LoggedAction = 'call' | 'whatsapp' | 'email' | 'meeting' | 'visit' | 'follow-up';
+export function statusAfterAction(current: string, action: LoggedAction, outcome = ''): string | null {
+  const stage = statusStage(current);
+  if (stage === 'won' || stage === 'lost' || stage === 'closed') return null;
+  let next: string | null = null;
+  if (action === 'whatsapp') next = 'Sent WhatsApp';
+  else if (action === 'email') next = 'Mail Sent';
+  else if (action === 'follow-up') next = 'Call Back';
+  else if (action === 'meeting') next = 'Scheduled Meeting';
+  else if (action === 'visit') next = 'Site Visit Scheduled';
+  else if (action === 'call') {
+    next = ({ 'Contacted': 'Contacted', 'Line Busy': 'No Answer', 'No Answer': 'No Answer', 'Wrong Number': 'Wrong Number', 'Asked to Call Back': 'Client Will Call Back', 'Not Interested': 'Not Interested' } as Record<string, string>)[outcome] || null;
+  }
+  if (!next || next === current) return null;
+  const moves = action === 'meeting' || action === 'visit' ? (stage === 'active' || (stage === 'pipeline' && current !== 'Negotiation')) : stage === 'active';
+  return moves || (action === 'call' && (outcome === 'Wrong Number' || outcome === 'Not Interested')) ? next : null;
+}
 export const isOpenStatus = (s: string) => !ACTIVE_EXCLUDE.includes(s);
 
 export const PRIORITIES = ['VIP', 'High', 'Medium', 'Low'];
@@ -151,3 +173,42 @@ export const CONTRACT_STEPS: { key: string; department: string; label: string; s
   { key: 'cfo', department: 'CFO', label: 'CFO signature', slaDays: 2 },
   { key: 'ceo', department: 'CEO', label: 'CEO signature', slaDays: 2 },
 ];
+
+// ---------------------------------------------------------------------------------------------
+// Dropdown lists the administrator edits in Settings. The arrays above are changed IN PLACE, so every screen that imports
+// them sees the new values on its next render. The defaults are kept for "Reset". The last saved copy is cached in the browser
+// so the first paint already uses it.
+// ---------------------------------------------------------------------------------------------
+export interface DropdownLists {
+  statuses?: { group: string; statuses: string[] }[];
+  sources?: string[]; projects?: string[]; industries?: string[]; lostReasons?: string[]; lostCategories?: string[]; temperatures?: string[];
+}
+export const DEFAULT_LISTS: Required<DropdownLists> = JSON.parse(JSON.stringify({
+  statuses: STATUS_GROUPS, sources: SOURCES, projects: PROJECTS, industries: INDUSTRIES, lostReasons: LOST_REASONS_TEAM, lostCategories: LOST_CATEGORIES, temperatures: TEMPERATURES,
+}));
+/** statuses the system's own rules depend on: they can be moved or renamed in the sheet below but never deleted */
+export const PROTECTED_STATUSES = new Set<string>([...REQ_DATETIME, ...REQ_FOLLOWUP, ...ACTIVE_EXCLUDE, ...PIPELINE_STATUSES, ...LEGACY_STATUSES, 'New', 'Contacted']);
+const swap = (a: string[], b?: string[]) => { if (Array.isArray(b) && b.length) a.splice(0, a.length, ...b.filter((x) => typeof x === 'string' && x.trim())); };
+export function applyLists(o: DropdownLists | null | undefined) {
+  if (!o || typeof o !== 'object') return;
+  if (Array.isArray(o.statuses) && o.statuses.length) {
+    const groups = o.statuses.map((g) => ({ group: String(g.group), statuses: (g.statuses || []).filter((x) => typeof x === 'string' && x.trim()) }));
+    const have = new Set(groups.flatMap((g) => g.statuses));
+    // a status the rules need is never lost, even if an old saved copy lacks it
+    for (const d of DEFAULT_LISTS.statuses) for (const st of d.statuses) if (PROTECTED_STATUSES.has(st) && !have.has(st)) (groups.find((g) => g.group === d.group) || groups[0]).statuses.push(st);
+    STATUS_GROUPS.splice(0, STATUS_GROUPS.length, ...groups);
+    STATUSES.splice(0, STATUSES.length, ...groups.flatMap((g) => g.statuses));
+  }
+  swap(SOURCES, o.sources); swap(PROJECTS, o.projects); swap(INDUSTRIES, o.industries); swap(LOST_REASONS_TEAM, o.lostReasons); swap(LOST_CATEGORIES, o.lostCategories); swap(TEMPERATURES, o.temperatures);
+}
+try { const c = localStorage.getItem('crm_lists'); if (c) applyLists(JSON.parse(c)); } catch { /* defaults */ }
+/** ask the server for the saved lists; true when they differ from what this browser was using */
+export async function loadLists(): Promise<boolean> {
+  try {
+    const r = await fetch('/api/crm/lists'); if (!r.ok) return false;
+    const j = await r.json(); const next = JSON.stringify(j || {});
+    if (next === (localStorage.getItem('crm_lists') || '{}')) return false;
+    try { localStorage.setItem('crm_lists', next); } catch { /* ignore */ }
+    applyLists(j); return true;
+  } catch { return false; }
+}

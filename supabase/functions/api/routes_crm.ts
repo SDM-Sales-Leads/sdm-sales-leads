@@ -12,7 +12,7 @@ import {
 } from "./lib.ts";
 import { route } from "./router.ts";
 import { canonicalPark } from "./parks.ts";
-import { sanitizeLead } from "./leadrules.ts";
+import { CUSTOM_STATUSES, sanitizeLead } from "./leadrules.ts";
 import { getBody, htmlToText, listFolder, loadEws } from "./ews.ts";
 import { sqmOf } from "./routing_pick.ts";
 import {
@@ -171,6 +171,7 @@ for (const [name, spec] of Object.entries(SPECS)) {
     const team = scope === "team" ? await teamIds(c) : [];
     const saved: any[] = [], conflicts: string[] = [], rejected: { id: string; reason: string }[] = [], idMap: Record<string, string> = {};
     const auditRows: any[] = [];
+    await refreshCustomStatuses();
     const touched: { id: string; prev: string | null; next: string | null; d: any; fresh: any[] }[] = [];   // leads whose owner or content changed (for notifications)
     const audit = (leadId: string, a: { action: string; from?: string; to?: string; note?: string }) =>
       auditRows.push({ lead_id: leadId, actor_id: c.id, actor_name: c.name, action: a.action, from_value: a.from ?? null, to_value: a.to ?? null, note: a.note ?? null });
@@ -512,6 +513,35 @@ route("POST", "/crm/routing/preview", async ({ req, c }) => {
   const st = sim.st;
   return { method: q.assignmentMethod, steps, people: trace.map((t) => ({ name: t.name, openBefore: t.open, sqmBefore: t.sqm, openAfter: st?.open?.[t.id] || 0, sqmAfter: st?.sqm?.[t.id] || 0, eligible: t.eligible })) };
 });
+// ---------------------------------------------------------------------------------------------
+// dropdown lists the administrator edits in Settings (statuses, sources, projects, industries, lost reasons ...)
+// ---------------------------------------------------------------------------------------------
+const LIST_KEYS = ["statuses", "sources", "projects", "industries", "lostReasons", "lostCategories", "temperatures"] as const;
+let customAt = 0;
+async function refreshCustomStatuses() {
+  if (Date.now() - customAt < 30_000) return;
+  customAt = Date.now();
+  const l = await getConfig<any>("dropdown_lists", {});
+  CUSTOM_STATUSES.clear();
+  for (const g of Array.isArray(l.statuses) ? l.statuses : []) for (const s of Array.isArray(g?.statuses) ? g.statuses : []) if (typeof s === "string") CUSTOM_STATUSES.add(s);
+}
+route("GET", "/crm/lists", async ({ c }) => { needCrm(c); return await getConfig<any>("dropdown_lists", {}); });
+route("POST", "/crm/lists", async ({ req, c }) => {
+  needAdmin(c);
+  const b = await body(req, 100_000);
+  const words = (a: any) => { const seen = new Set<string>(); for (const x of Array.isArray(a) ? a : []) { const t = str(x, 80).trim(); if (t) seen.add(t); } return [...seen].slice(0, 200); };
+  const out: any = {};
+  for (const k of LIST_KEYS) {
+    if (b[k] === undefined) continue;
+    if (k === "statuses") out.statuses = (Array.isArray(b.statuses) ? b.statuses : []).slice(0, 12).map((g: any) => ({ group: str(g?.group, 60), statuses: words(g?.statuses) })).filter((g: any) => g.group);
+    else out[k] = words(b[k]);
+  }
+  await setConfig("dropdown_lists", { ...(await getConfig<any>("dropdown_lists", {})), ...out });
+  customAt = 0; await refreshCustomStatuses();
+  await logActivity(c, "Update Dropdown Lists", `Changed: ${Object.keys(out).join(", ")}`, "admin");
+  return { success: true };
+});
+
 route("GET", "/crm/queue-settings", async ({ c }) => { needCrm(c); return await loadQueue(); });
 route("POST", "/crm/queue-settings", async ({ req, c }) => {
   needCrm(c);

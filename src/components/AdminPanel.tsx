@@ -1,3 +1,4 @@
+import { CrmDropdownLists } from './crm/CrmDropdownLists';
 import React, { useState, useEffect } from 'react';
 import { TeamImport } from './TeamImport';
 import { LandBankConnectionCard } from './LandBankConnectionCard';
@@ -11,7 +12,7 @@ import { Upload, Download, Plus, Trash2, Save, Mail, ShieldCheck, Send, Loader2,
 
 export const AdminPanel: React.FC = () => {
   const { user, refreshPermissions } = useAuth();
-  const [activeTab, setActiveTab] = useState<'users' | 'system' | 'notifications' | 'styling' | 'roles'>('system');
+  const [activeTab, setActiveTab] = useState<'users' | 'system' | 'notifications' | 'styling' | 'roles' | 'lists'>('system');
   const { settings, updateSettings } = useTheme();
   const [users, setUsers] = useState<any[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -411,6 +412,12 @@ export const AdminPanel: React.FC = () => {
         >
           Roles & Permissions
         </button>
+        <button 
+          onClick={() => setActiveTab('lists')}
+          className={`px-6 py-2 rounded-xl text-xs font-bold transition-all ${activeTab === 'lists' ? 'bg-brand-red text-white shadow-lg shadow-brand-red/20' : 'text-brand-gray hover:bg-black/5'}`}
+        >
+          Dropdown Lists
+        </button>
       </div>
 
       {activeTab === 'users' && (
@@ -751,6 +758,8 @@ export const AdminPanel: React.FC = () => {
           </div>
         </div>
       )}
+
+      {activeTab === 'lists' && <CrmDropdownLists />}
 
       {activeTab === 'roles' && (
         <div className="space-y-8">
