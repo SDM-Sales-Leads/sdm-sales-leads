@@ -13,6 +13,8 @@ export const CrmCallCenter: React.FC<{ leads: Lead[]; onOpen: (l: Lead) => void 
   const rows = useMemo(() => leads.map((l) => ({ l, s: ccState(l, now) })).filter((x) => x.s).sort((a, b) => a.s!.leftMs - b.s!.leftMs) as { l: Lead; s: NonNullable<ReturnType<typeof ccState>> }[], [leads, now]);
   if (!rows.length) return null;
   const late = rows.filter((r) => r.s.overdue).length;
+  const lateOwned = rows.filter((r) => r.s.overdue && r.l.assignedSalespersonId).length;
+  const noOwner = rows.filter((r) => !r.l.assignedSalespersonId).length;
   const shown = all ? rows : rows.slice(0, 6);
   return (
     <section className={`rounded-2xl border shadow-sm overflow-hidden ${late ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'}`} aria-label="Call center leads waiting for first contact">
@@ -20,7 +22,7 @@ export const CrmCallCenter: React.FC<{ leads: Lead[]; onOpen: (l: Lead) => void 
         <span className={`w-9 h-9 rounded-full flex items-center justify-center text-white ${late ? 'bg-red-600' : 'bg-amber-500'}`}><AlarmClock size={18} /></span>
         <span className="flex-1 min-w-0">
           <span className="block font-extrabold text-brand-black text-sm">Call center first: {rows.length} {rows.length === 1 ? 'lead' : 'leads'} waiting for the first contact</span>
-          <span className="block text-[11px] font-semibold text-brand-gray">Every call center lead must be contacted within {CC_HOURS} hours. {late ? <b className="text-red-700">{late} past the limit: the team leader has been alerted.</b> : 'Call, WhatsApp or e-mail, then log it.'}</span>
+          <span className="block text-[11px] font-semibold text-brand-gray">Every call center lead must be contacted within {CC_HOURS} hours. {lateOwned ? <b className="text-red-700">{lateOwned} past the limit with an owner: the team leader is alerted. </b> : null}{noOwner ? <b className="text-red-700">{noOwner} have no owner yet: assign them now. </b> : null}{!late ? 'Call, WhatsApp or e-mail, then log it.' : null}</span>
         </span>
         {open ? <ChevronUp size={18} className="text-brand-gray" /> : <ChevronDown size={18} className="text-brand-gray" />}
       </button>
