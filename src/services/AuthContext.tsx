@@ -19,11 +19,13 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
+  useEffect(() => { shownId.current = user?.id != null ? String(user.id) : null; }, [user]);
   const [permissions, setPermissions] = useState<RolePermissions | null>(null);
   const [mustChangePassword, setMustChange] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   // who am I, and what may I do? (decided by the server from my login)
+  const shownId = React.useRef<string | null>(null);   // the person this tab is showing
   const meStatus = React.useRef(0);   // last answer of /me (0 = no answer at all): tells a refused account from a busy server
   const loadMe = useCallback(async (): Promise<boolean> => {
     try {
@@ -86,8 +88,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     })();
     const onExpired = () => { supabase.auth.signOut().finally(clear); };
     window.addEventListener('sdm-session-expired', onExpired);
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') clear();
+      // another tab signed in as a DIFFERENT person: the login is shared by every tab of this browser, so this tab would keep
+      // showing the old person's screens while loading the new person's data. Reload so the screens match the login.
+      else if (session?.user?.id && shownId.current && session.user.id !== shownId.current) window.location.reload();
     });
     return () => { alive = false; window.removeEventListener('sdm-session-expired', onExpired); sub.subscription.unsubscribe(); };
   }, [loadMe, clear]);
