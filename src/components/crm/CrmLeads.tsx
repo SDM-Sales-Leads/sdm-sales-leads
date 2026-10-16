@@ -8,6 +8,10 @@ import {
   INDUSTRIES, NO_CHANNEL, channelOf, LOST_CATEGORIES, LOST_REASONS_TEAM, PRIORITIES, SOURCES, STATUS_GROUPS, LEGACY_STATUSES, isOpenStatus, leadScore, normSource, phoneIntl, statusStage,
 } from './leadConfig';
 import { statusAfterAction, REQ_FOLLOWUP } from './leadConfig';
+import { CrmCallCenter } from './CrmCallCenter';
+import { Collapse } from './Collapse';
+import { CrmBulkMessage } from './CrmBulkMessage';
+import { ccState } from './leadMetrics';
 import { KanbanKey, LeadAuth, addDaysISO, withSideEffects, kanbanBucket, neglectInfo, prioKey, priorityClass, statusClass, todayISO } from './leadRules';
 import { fmtSize, formatLeadDateTime, getSlaStatus, isSlaAtRisk, localISO } from './leadView';
 import { KanbanCard, LeadRow, PAGE_SIZES, PageSize, PagerBar, ALL_CHUNK } from './LeadListParts';
@@ -668,6 +672,7 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
 
   // Bulk Actions. Selection is a Set for lookups (a row test must not scan the whole selection).
   const selectedSet = useMemo(() => new Set(selectedLeadIds), [selectedLeadIds]);
+  const [bulkMsg, setBulkMsg] = useState<'whatsapp' | 'email' | null>(null);
   const handleSelectLead = useCallback((id: string) => {
     setSelectedLeadIds(prev => (prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]));
   }, []);
@@ -1769,6 +1774,12 @@ ${user.name || ''}`);
             {allFilteredSelected && filteredLeads.length > pageLeads.length && <span className="text-[11px] text-white/70">(all {filteredLeads.length.toLocaleString('en-US')} filtered leads)</span>}
           </div>
           <div className="flex items-center gap-2 w-full sm:w-auto">
+            {currentRole !== 'Read Only' && (
+              <>
+                <button type="button" onClick={() => setBulkMsg('whatsapp')} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold px-3 py-2 rounded-xl shadow inline-flex items-center gap-1.5">WhatsApp</button>
+                <button type="button" onClick={() => setBulkMsg('email')} className="bg-white/90 hover:bg-white text-brand-black text-xs font-extrabold px-3 py-2 rounded-xl shadow inline-flex items-center gap-1.5">E-mail</button>
+              </>
+            )}
             <select
               value={bulkAction}
               onChange={(e) => setBulkAction(e.target.value)}
@@ -1814,10 +1825,44 @@ ${user.name || ''}`);
         />
       </div>
 
+      {bulkMsg && <CrmBulkMessage mode={bulkMsg} leads={(crmService.getLeads() as Lead[]).filter((l) => selectedSet.has(l.id))} userName={user?.name || 'Agent'} userId={user?.id != null ? String(user.id) : undefined} onClose={() => { setBulkMsg(null); onLeadsUpdated(); }} />}
+
+      <CrmCallCenter leads={filteredLeads} onOpen={setSelectedLead} />
+
       {/* -------------------- 1. LIST VIEW -------------------- */}
       {viewMode === 'list' && (
         <div className="bg-white rounded-2xl border border-brand-gray/20 shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
+          {/* phone: one card per lead instead of a wide table */}
+          <div className="md:hidden divide-y divide-brand-gray/10">
+            {pageLeads.length === 0 && <p className="py-8 text-center text-brand-gray text-xs">No matching leads. Change the filters or register a new lead.</p>}
+            {pageLeads.map((l) => {
+              const cc = ccState(l, Date.now());
+              return (
+                <div key={l.id} className={`flex gap-3 px-3.5 py-3.5 ${cc ? 'bg-red-50/70 shadow-[inset_4px_0_0_#A6192E]' : selectedSet.has(l.id) ? 'bg-brand-red/5' : ''}`}>
+                  <button type="button" onClick={() => handleSelectLead(l.id)} aria-label={`Select lead ${l.id}`} className="pt-0.5 self-start">
+                    {selectedSet.has(l.id) ? <CheckSquare size={20} className="text-brand-red" /> : <Square size={20} className="text-brand-gray/50" />}
+                  </button>
+                  <button type="button" onClick={() => setSelectedLead(l)} className="flex-1 min-w-0 text-left">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] font-bold text-brand-gray">{l.id}</span>
+                      {cc && <span className={`text-[9px] font-extrabold rounded px-1.5 py-0.5 text-white ${cc.overdue ? 'bg-red-600' : 'bg-amber-500'}`}>CC {cc.overdue ? 'LATE' : '24h'}</span>}
+                      <span className={`ml-auto whitespace-nowrap px-2 py-0.5 rounded-full text-[10px] font-bold ${statusClass(l.status)}`}>{l.status}</span>
+                    </div>
+                    <div className="mt-1 font-extrabold text-[15px] text-brand-black truncate" dir="auto">{l.customerName || '—'}</div>
+                    <div className="mt-0.5 text-[12px] text-brand-gray font-mono">{phoneIntl(l.phoneNumber) || l.phoneNumber || 'no phone'}</div>
+                    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-brand-gray font-semibold">
+                      {l.project && <span>{l.project}</span>}
+                      {Number(l.requiredSize) > 0 && <span>{Number(l.requiredSize).toLocaleString('en-US')} sqm</span>}
+                      <span>{l.assignedSalespersonName || 'Unassigned'}</span>
+                      {l.nextFollowUpDate && <span className={l.nextFollowUpDate <= todayISO() ? 'text-red-600 font-bold' : ''}>Follow-up {l.nextFollowUpDate}</span>}
+                    </div>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="overflow-x-auto hidden md:block">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-brand-gray/5 border-b border-brand-gray/15 text-brand-gray text-[10px] font-bold uppercase tracking-wider">
@@ -2525,6 +2570,7 @@ ${user.name || ''}`);
               />
 
               {/* CRM Details Grid */}
+              <Collapse title="Customer details (summary)" summary={`${selectedLead.phoneNumber || 'no phone'} · ${selectedLead.project || 'project —'}`}>
               <div className="grid grid-cols-2 gap-4 bg-white border border-brand-gray/15 rounded-xl p-4">
                 <div>
                   <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer Name</span>
@@ -2590,6 +2636,8 @@ ${user.name || ''}`);
                 </div>
               </div>
 
+              </Collapse>
+
               {/* Description Comments */}
               <div>
                 <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block mb-2">Original Inquiry Comments</span>
@@ -2598,6 +2646,7 @@ ${user.name || ''}`);
                 </p>
               </div>
 
+              <Collapse title="Plot recommendations & offers" summary={`${(selectedLead.assignedPlots || []).length} plots chosen`}>
               <LeadPlotsPanel
                   lead={selectedLead} plots={plots} landBankUrl={plotsInfo?.landBankUrl} user={user?.name || 'User'}
                   onNavigateToInventory={() => setActiveSubTab('plots-inventory')}
@@ -2608,11 +2657,12 @@ ${user.name || ''}`);
               />
 
               <OfferPrintsSection leadId={selectedLead.id} />
+              </Collapse>
 
               {/* Attachments Section */}
               {selectedLead.attachments?.length > 0 && (
-                <div>
-                  <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block mb-2">Attachments</span>
+                <Collapse title={`Attachments (${selectedLead.attachments?.length || 0})`}>
+
                   <div className="grid grid-cols-2 gap-2">
                     {selectedLead.attachments?.map((att, attIdx) => (
                       <div key={`${att.id}-${attIdx}`} className="flex items-center justify-between p-2.5 bg-brand-gray/5 border border-brand-gray/15 rounded-lg">
@@ -2643,7 +2693,7 @@ ${user.name || ''}`);
                       </div>
                     ))}
                   </div>
-                </div>
+                </Collapse>
               )}
 
               {/* CRM Sales Notes / Comments Feed */}
@@ -2695,8 +2745,8 @@ ${user.name || ''}`);
               </div>
 
               {/* TIMELINE TRACKER */}
-              <div className="space-y-4">
-                <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider block">Lead Timeline Logs</span>
+              <Collapse title={`Timeline (${(selectedLead.timeline || []).length})`}>
+
                 <div className="relative border-l border-brand-gray/20 pl-4 ml-2 space-y-4">
                   {(selectedLead.timeline || []).map((event, evIdx) => {
                     return (
@@ -2717,7 +2767,7 @@ ${user.name || ''}`);
                     );
                   })}
                 </div>
-              </div>
+              </Collapse>
 
               {/* Server-written change history: owner, status, source, value, stage dates, cash */}
               <LeadAuditHistory leadId={selectedLead.id} version={String((selectedLead as any)._rev || selectedLead.lastUpdated)} />

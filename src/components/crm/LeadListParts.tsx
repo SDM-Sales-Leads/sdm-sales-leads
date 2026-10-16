@@ -4,6 +4,7 @@ import React from 'react';
 import { AlertTriangle, CheckSquare, ChevronLeft, ChevronRight, Clock, Info, Square, UserCheck, UserPlus } from 'lucide-react';
 import type { Contact, Lead } from './types';
 import { NO_CHANNEL, channelOf, phoneIntl } from './leadConfig';
+import { ccState } from './leadMetrics';
 import { fmtSize, formatLeadDateTime, getSlaStatus } from './leadView';
 import { priorityClass, prioKey, statusClass } from './leadRules';
 import { LeadScoreChip } from './LeadScoreChip';
@@ -28,9 +29,10 @@ interface RowProps {
 export const LeadRow = React.memo(({ lead: l, selected, cols, canAssign, winRate, onSelect, onOpen, onAssign, contact, onContact }: RowProps) => {
   const has = (k: string) => cols.includes(k);
   const sla = l.slaDeadline ? getSlaStatus(l) : null;
+  const cc = ccState(l, Date.now());
   return (
     <tr
-      className={`hover:bg-brand-gray/5 transition-all cursor-pointer ${selected ? 'bg-brand-red/5' : ''}`}
+      className={`hover:bg-brand-gray/5 transition-all cursor-pointer ${cc ? 'bg-red-50/70 shadow-[inset_4px_0_0_#A6192E]' : selected ? 'bg-brand-red/5' : ''}`}
       onClick={(e) => { if ((e.target as HTMLElement).closest('button,a,input,select,textarea,label')) return; onOpen(l); }}
     >
       <td className="py-3.5 px-4">
@@ -40,7 +42,7 @@ export const LeadRow = React.memo(({ lead: l, selected, cols, canAssign, winRate
       </td>
       {has('id') && (
         <td className="py-3.5 px-3">
-          <span className="font-mono font-bold text-brand-black hover:underline cursor-pointer" onClick={() => onOpen(l)}>{l.id}</span>
+          <span className="font-mono font-bold text-brand-black hover:underline cursor-pointer" onClick={() => onOpen(l)}>{l.id}</span>{cc && <span className={`ml-1.5 text-[9px] font-extrabold rounded px-1.5 py-0.5 text-white ${cc.overdue ? 'bg-red-600' : 'bg-amber-500'}`} title="Call center lead: first contact within 24 hours">CC {cc.overdue ? 'LATE' : '24h'}</span>}
         </td>
       )}
       {has('date') && <td className="py-3.5 px-3 text-brand-gray whitespace-nowrap font-mono">{formatLeadDateTime(l.date)}</td>}

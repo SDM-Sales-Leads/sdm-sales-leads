@@ -74,7 +74,7 @@ export async function verify(cfg: EwsConfig) {
   await call(cfg, envelope(`<m:ResolveNames ReturnFullContactData="false"><m:UnresolvedEntry>${escXml(cfg.user)}</m:UnresolvedEntry></m:ResolveNames>`), 15000);
 }
 
-export async function sendMail(cfg: EwsConfig, o: { to: string[]; subject: string; html?: string; text?: string }) {
+export async function sendMail(cfg: EwsConfig, o: { to: string[]; subject: string; html?: string; text?: string; replyTo?: string }) {
   const to = o.to.map((e) => `<t:Mailbox><t:EmailAddress>${escXml(e)}</t:EmailAddress></t:Mailbox>`).join("");
   const bodyType = o.html ? "HTML" : "Text";
   // CDATA cannot contain "]]>" — split it so user text can never break out of the section
@@ -85,6 +85,7 @@ export async function sendMail(cfg: EwsConfig, o: { to: string[]; subject: strin
         <t:Subject>${escXml(o.subject.replace(/[\r\n]+/g, " ").slice(0, 250))}</t:Subject>
         <t:Body BodyType="${bodyType}"><![CDATA[${bodyText}]]></t:Body>
         <t:ToRecipients>${to}</t:ToRecipients>
+        ${o.replyTo ? `<t:ReplyTo><t:Mailbox><t:EmailAddress>${escXml(o.replyTo)}</t:EmailAddress></t:Mailbox></t:ReplyTo>` : ""}
       </t:Message></m:Items>
     </m:CreateItem>`));
 }

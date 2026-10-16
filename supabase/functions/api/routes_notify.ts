@@ -3,7 +3,9 @@
 import { admin, body, getConfig, needAdmin, setConfig, bad, escHtml, getSecret, HttpError, isObj, logActivity, normEmail, nowIso, rateLimit, safeEqual, str } from "./lib.ts";
 import { route } from "./router.ts";
 import { loadEws, sendMail } from "./ews.ts";
-import { appBase, notifyOnHold, resetHoldCache, runReminders } from "./notify.ts";
+import { crmScope, needCrm as _nc } from "./lib.ts";
+import { SPECS, teamIds } from "./routes_crm.ts";
+import { appBase, escalateCallCenter, notifyOnHold, resetHoldCache, runReminders } from "./notify.ts";
 
 // ---------------------------------------------------------------------------------------------
 // the bell
@@ -100,6 +102,39 @@ route("POST", "/auth/reset", async ({ req }) => {
 }, { public: true });
 
 // ---------------------------------------------------------------------------------------------
+// bulk e-mail to customers: one personal mail each (never a visible list of addresses), sent from the system mailbox with the
+// salesperson as Reply-To. Up to 25 leads per call; the page calls it in rounds. Switched off while notifications are on hold.
+// ---------------------------------------------------------------------------------------------
+route("POST", "/crm/bulk-email", async ({ req, c }) => {
+  _nc(c);
+  if (await notifyOnHold()) throw bad("E-mails to customers are switched off during testing. Use \"Open in my own e-mail\" instead.");
+  await rateLimit(`bulkmail:${c.id}`, 3600, 600);
+  const b = await body(req, 200_000);
+  const ids = (Array.isArray(b.leadIds) ? b.leadIds : []).map((x: any) => str(x, 60)).filter(Boolean).slice(0, 25);
+  const subject = str(b.subject, 200).trim(), text = str(b.message, 8000).trim();
+  if (!ids.length) throw bad("Choose at least one lead");
+  if (!subject || !text) throw bad("Write a subject and a message");
+  const scope = crmScope(c);
+  const team = scope === "team" ? await teamIds(c) : [];
+  const { data: rows } = await admin.from("crm_leads").select("*").in("id", ids).is("deleted_at", null);
+  const cfg = await loadEws();
+  const { data: me } = await admin.from("app_users").select("email,name").eq("id", c.id).maybeSingle();
+  const results: { id: string; ok: boolean; reason?: string }[] = [];
+  for (const id of ids) {
+    const r = (rows || []).find((x: any) => x.id === id);
+    if (!r || !SPECS.leads.owns(c, scope, team, r)) { results.push({ id, ok: false, reason: "not allowed" }); continue; }
+    const to = String(r.data?.email || "").trim();
+    if (!/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(to)) { results.push({ id, ok: false, reason: "no valid e-mail" }); continue; }
+    const fill = (t: string) => t.replace(/\{name\}/g, r.data?.customerName || "").replace(/\{company\}/g, r.data?.companyName || "").replace(/\{project\}/g, r.data?.project || "our industrial cities").replace(/\{rep\}/g, me?.name || c.name || "");
+    const html = `<div style="font-family:Segoe UI,Tahoma,Arial,sans-serif;font-size:15px;line-height:1.6;color:#222" dir="auto">${escHtml(fill(text)).replace(/\n/g, "<br>")}<br><br><span style="color:#888;font-size:12px">${escHtml(me?.name || "")} · Elsewedy Industrial Development</span></div>`;
+    try { await sendMail(cfg, { to: [to], subject: fill(subject), html, replyTo: me?.email || undefined }); results.push({ id, ok: true }); }
+    catch (e: any) { results.push({ id, ok: false, reason: String(e?.message || "send failed").slice(0, 80) }); if (/rejected|HTTP 5|throttl/i.test(String(e?.message))) break; }
+  }
+  await logActivity(c, "Bulk e-mail", `${results.filter((x) => x.ok).length} of ${ids.length} sent`, "ticket");
+  return { results };
+});
+
+// ---------------------------------------------------------------------------------------------
 // reminders: the scheduler calls this every 5 minutes
 // ---------------------------------------------------------------------------------------------
 route("POST", "/cron/reminders", async ({ req }) => {
@@ -108,7 +143,9 @@ route("POST", "/cron/reminders", async ({ req }) => {
   if (!want || !safeEqual(given, want)) throw new HttpError(401, "Not allowed");
   const { data } = await admin.from("system_config").select("value").eq("key", "ingest_auto").maybeSingle();
   if (data?.value !== true) return { skipped: true, reason: "automatic jobs are off" };
-  return await runReminders();
+  const r = await runReminders();
+  let cc: any = {}; try { cc = await escalateCallCenter(); } catch (e: any) { cc = { ccError: String(e?.message || e).slice(0, 120) }; }
+  return { ...r, ...cc };
 }, { public: true });
 
 void isObj;

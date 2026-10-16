@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Bell, Clock, Pencil, UserPlus, Info, CheckCheck } from 'lucide-react';
+import { Bell, Clock, Pencil, UserPlus, Info, CheckCheck, AlarmClock } from 'lucide-react';
 
 interface Notif { id: string; type: string; leadId: string | null; title: string; body: string | null; at: string; read: boolean }
 
@@ -13,7 +13,7 @@ const ago = (iso: string) => {
   return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) + ' ' + new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 };
 const Icon = ({ type }: { type: string }) =>
-  type === 'assigned' ? <UserPlus size={15} /> : type === 'reminder' ? <Clock size={15} /> : type === 'changed' ? <Pencil size={15} /> : <Info size={15} />;
+  type === 'assigned' ? <UserPlus size={15} /> : type === 'reminder' ? <Clock size={15} /> : type === 'changed' ? <Pencil size={15} /> : type === 'escalation' ? <AlarmClock size={15} /> : <Info size={15} />;
 
 /** The bell: stored per user on the server. Unread = red and pulsing, read = gray. A click opens the lead it is about. */
 export const NotificationBell: React.FC<{ dark?: boolean; className?: string }> = ({ dark = false, className = '' }) => {

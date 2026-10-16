@@ -1,5 +1,6 @@
 // The lead detail form: every field of the sales team's previous CRM, with its required-field rules (spec_A 2.4, 4.1-4.7).
 // Field enabling is a convenience; the server decides and its refusal is shown as a toast by crmService.
+import { Collapse } from './Collapse';
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Lock, Save, RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
@@ -135,7 +136,7 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
   const showStages = rights.stages;
 
   return (
-    <div className="bg-white border border-brand-gray/15 rounded-xl p-4 space-y-4">
+    <div className="space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-extrabold text-brand-gray uppercase tracking-wider">Lead details</span>
         {roLock && <span className="text-[10px] text-brand-gray flex items-center gap-1"><Lock size={10} /> Read only</span>}
@@ -149,7 +150,8 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
       )}
 
       {/* Status and follow-up */}
-      <div className="grid grid-cols-2 gap-3">
+      <Collapse title="Status & follow-up" defaultOpen forceOpen={!!err} summary={`${status} · next follow-up ${d.nextFollowUpDate || '—'}`}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
         <Field label="Status" locked={lockedFollow}>
           <select value={status} disabled={lockedFollow} onChange={(e) => onStatus(e.target.value)} className={inputCls}>
             {statusOptions(lead.status).map((g) => (
@@ -213,8 +215,11 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
         </Field>
       </div>
 
+      </Collapse>
+
       {/* Qualification */}
-      <div className="grid grid-cols-2 gap-3 pt-3 border-t border-brand-gray/10">
+      <Collapse title="Qualification & industry" summary={`${d.qualification || 'Not qualified yet'} · ${d.industry || 'industry —'}`}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
         <Field label="Qualification" locked={lockedFollow}>
           <select value={d.qualification} disabled={lockedFollow} onChange={(e) => set('qualification', e.target.value)} className={inputCls}>
             <option value="">Not qualified yet</option>
@@ -246,8 +251,11 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
         </Field>
       </div>
 
+      </Collapse>
+
       {/* Contact and origin */}
-      <div className="grid grid-cols-2 gap-3 pt-3 border-t border-brand-gray/10">
+      <Collapse title="Customer, contact & origin" summary={`${d.phoneNumber || 'no phone'} · ${d.email || 'no e-mail'} · ${d.project || 'project —'}`}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
         <Field label="Customer name" locked={!rights.shared}>
           <input value={d.customerName} disabled={!rights.shared} onChange={(e) => set('customerName', e.target.value)} className={inputCls} />
         </Field>
@@ -295,9 +303,12 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
         </Field>
       </div>
 
+      </Collapse>
+
       {/* Deal stages and values: owner / operations / team leader, existing leads only */}
       {showStages && (
-        <div className="grid grid-cols-2 gap-3 pt-3 border-t border-brand-gray/10">
+        <Collapse title="Deal stages & value" summary={status === 'Won' ? 'Won deal' : 'EOI, reservation, contract, value'} forceOpen={status === 'Won'}>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3">
           <div className="col-span-2 text-[10px] font-extrabold text-brand-gray uppercase tracking-wider">Deal stages and value</div>
           <Field label="Deal path">
             <select value={d.eoiApplicable === true ? 'yes' : d.eoiApplicable === false ? 'no' : ''} onChange={(e) => set('eoiApplicable', e.target.value === 'yes' ? true : e.target.value === 'no' ? false : null)} className={inputCls}>
@@ -334,6 +345,7 @@ export const LeadEditor: React.FC<Props> = ({ lead, auth, actorName, actorId, on
             </Field>
           )}
         </div>
+        </Collapse>
       )}
 
       {dupMsg && (

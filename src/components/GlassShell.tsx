@@ -8,7 +8,7 @@ import { crmService } from './crm/crmService';
 import { crmNav } from './crm/crmNav';
 import { dayOf, todayISO } from './crm/leadMetrics';
 import { isOpenStatus } from './crm/leadConfig';
-import { setViewMode, ViewMode } from '../lib/viewMode';
+import { ViewSwitch } from './ViewSwitch';
 import { getLang, setLang } from '../i18n/lang';
 import { buildGlassNav, NavEntry } from './navModel';
 
@@ -80,8 +80,6 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
     return [...Array(lead).fill(null), ...Array.from({ length: n }, (_, i) => new Date(y, m, i + 1).toLocaleDateString('en-CA'))] as (string | null)[];
   }, [month]);
 
-  const modes: [ViewMode, string][] = [['old', 'Classic'], ['new', 'Current'], ['glass', 'Glass']];
-
   const railBtn = (n: NavEntry) => {
     const I = n.icon, on = here(n);
     return <button key={n.id} type="button" title={n.label} onClick={() => pick(n)} className={`glass-rail-btn ${on ? 'on' : ''}`}><I size={20} /></button>;
@@ -97,6 +95,7 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
           <div className="flex-1 flex flex-col items-center gap-2.5 overflow-y-auto">{rail.map(railBtn)}
             <button type="button" title="All menus" onClick={() => setMenu(true)} className="glass-rail-btn"><Grid2x2 size={20} /></button>
           </div>
+          <ViewSwitch className="flex-col !rounded-2xl !p-1" />
           <button type="button" translate="no" title={getLang() === 'ar' ? 'Switch to English' : 'التبديل إلى العربية'} onClick={() => setLang(getLang() === 'ar' ? 'en' : 'ar')} className="glass-rail-btn text-[13px] font-extrabold">{getLang() === 'ar' ? 'EN' : 'ع'}</button>
           <button type="button" title="Sign out" onClick={logout} className="glass-rail-btn"><LogOut size={19} /></button>
         </aside>
@@ -175,11 +174,6 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
         )}
       </div>
 
-      {/* the three looks */}
-      <div className="fixed bottom-3 left-1/2 -translate-x-1/2 z-30 glass-pill flex p-1 gap-1" translate="no">
-        {modes.map(([m, label]) => <button key={m} type="button" onClick={() => setViewMode(user?.id, m)} className={`px-3.5 py-1.5 rounded-full text-[12px] font-bold transition-colors ${m === 'glass' ? 'bg-brand-red text-white' : 'text-white/70 hover:text-white hover:bg-white/10'}`}>{label}</button>)}
-      </div>
-
       {/* all menus */}
       {menu && createPortal(
         <div className="fixed inset-0 z-[9990] flex items-start justify-center p-4 md:p-10 bg-black/45 backdrop-blur-sm" onClick={() => setMenu(false)}>
@@ -195,7 +189,7 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
                 </div>
               </div>
             ))}
-            <div className="flex gap-2 lg:hidden pt-2"><button type="button" onClick={() => setLang(getLang() === 'ar' ? 'en' : 'ar')} className="glass-pill px-4 py-2 text-xs font-bold" translate="no">{getLang() === 'ar' ? 'English' : 'العربية'}</button><button type="button" onClick={logout} className="glass-pill px-4 py-2 text-xs font-bold">Sign out</button></div>
+            <div className="flex gap-2 items-center lg:hidden pt-2"><ViewSwitch /><button type="button" onClick={() => setLang(getLang() === 'ar' ? 'en' : 'ar')} className="glass-pill px-4 py-2 text-xs font-bold" translate="no">{getLang() === 'ar' ? 'English' : 'العربية'}</button><button type="button" onClick={logout} className="glass-pill px-4 py-2 text-xs font-bold">Sign out</button></div>
           </div>
         </div>, document.body)}
     </div>

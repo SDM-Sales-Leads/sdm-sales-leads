@@ -26,6 +26,7 @@ import { useViewMode } from './lib/viewMode';
 import { OldViewShell } from './components/OldViewShell';
 import { GlassShell } from './components/GlassShell';
 import { GlassHome } from './components/GlassHome';
+import { MobileTabBar } from './components/MobileTabBar';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 const AppContent: React.FC = () => {
@@ -206,25 +207,31 @@ const AppContent: React.FC = () => {
 
   if (viewMode === 'glass') {
     return (
-      <GlassShell
-        activeTab={activeTab}
-        crmSubTab={crmSubTab}
-        go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }}
-      >
-        {pageContent}
-      </GlassShell>
+      <>
+        <GlassShell
+          activeTab={activeTab}
+          crmSubTab={crmSubTab}
+          go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }}
+        >
+          {pageContent}
+        </GlassShell>
+        <MobileTabBar activeTab={activeTab} crmSubTab={crmSubTab} go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }} />
+      </>
     );
   }
 
   if (viewMode === 'old') {
     return (
-      <OldViewShell
-        activeTab={activeTab}
-        crmSubTab={crmSubTab}
-        go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }}
-      >
-        {pageContent}
-      </OldViewShell>
+      <>
+        <OldViewShell
+          activeTab={activeTab}
+          crmSubTab={crmSubTab}
+          go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }}
+        >
+          {pageContent}
+        </OldViewShell>
+        <MobileTabBar activeTab={activeTab} crmSubTab={crmSubTab} go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }} />
+      </>
     );
   }
 
@@ -266,6 +273,7 @@ const AppContent: React.FC = () => {
           </main>
         </div>
       </div>
+      <MobileTabBar activeTab={activeTab} crmSubTab={crmSubTab} go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }} />
     </div>
   );
 };

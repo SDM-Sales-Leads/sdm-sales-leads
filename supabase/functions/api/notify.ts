@@ -160,4 +160,60 @@ export async function runReminders() {
   return { checked: due.length, sent: fresh.length };
 }
 
+// ---------------------------------------------------------------------------------------------
+// call center leads: the first contact must happen within 24 hours. Past that, the team leader is told (bell + e-mail), once per lead.
+// The clock starts when the lead has both arrived and been given to its owner (the later of the two).
+// ---------------------------------------------------------------------------------------------
+const CC_CLOSED = new Set(["Won", "Lost", "Not Interested", "Low Budget", "Wrong Number", "Duplicate", "Invalid", "Closed"]);
+const REAL_EVENTS = ["Call", "Email", "Meeting", "Visit", "WhatsApp", "SMS", "Comment"];
+export const isEngagedRow = (d: any): boolean => {
+  if (d?.firstContactAt || d?.lastContactDate || d?.offerSent || d?.meetingDate) return true;
+  if (d?.status && d.status !== "New" && d.status !== "Assigned") return true;
+  return Array.isArray(d?.timeline) && d.timeline.some((t: any) => REAL_EVENTS.includes(t?.type));
+};
+
+export async function escalateCallCenter() {
+  const now = Date.now();
+  const hour = +(CAIRO_PARTS(new Date(now)) as any).hour;
+  if (hour < 7 || hour >= 23) return { ccSkipped: "outside 07:00-23:00 Cairo" };
+  if (await notifyOnHold()) return { ccHeld: true };
+  const { data } = await admin.from("crm_leads").select("id,assigned_to,data").is("deleted_at", null).not("assigned_to", "is", null).ilike("data->>channel", "call center").limit(800);
+  const late: any[] = [];
+  for (const l of data || []) {
+    const d = l.data || {};
+    if (CC_CLOSED.has(d.status) || isEngagedRow(d)) continue;
+    const start = Math.max(Date.parse(d.date) || 0, Date.parse(d.assignedDate) || 0);
+    if (!start) continue;
+    const hrs = (now - start) / 3600_000;
+    if (hrs >= 24 && hrs <= 72) late.push({ l, d, hrs, start });         // older than 3 days = history, never alerted
+  }
+  if (!late.length) return { ccLate: 0 };
+  const keys = late.map((x) => `cc24:${x.l.id}`);
+  const seen = new Set<string>();
+  for (let i = 0; i < keys.length; i += 100) { const { data: r } = await admin.from("crm_reminders_sent").select("key").in("key", keys.slice(i, i + 100)); (r || []).forEach((x: any) => seen.add(x.key)); }
+  const fresh = late.filter((x) => !seen.has(`cc24:${x.l.id}`)).slice(0, 30);
+  if (!fresh.length) return { ccLate: late.length, ccSent: 0 };
+  await admin.from("crm_reminders_sent").upsert(fresh.map((x) => ({ key: `cc24:${x.l.id}` })));
+  const ownerIds = [...new Set(fresh.map((x) => x.l.assigned_to))];
+  const { data: owners } = await admin.from("app_users").select("id,name,team_leader_id").in("id", ownerIds);
+  const om = new Map((owners || []).map((u: any) => [u.id, u]));
+  const { data: ops } = await admin.from("app_users").select("id").eq("role", "Sales Operation").neq("active", false);
+  const baseUrl = await appBase();
+  for (const x of fresh) {
+    const owner: any = om.get(x.l.assigned_to);
+    const to = owner?.team_leader_id ? [owner.team_leader_id] : (ops || []).map((u: any) => u.id);   // no team leader: Sales Operation hears about it
+    const name = x.d.customerName || x.l.id, hrs = Math.floor(x.hrs);
+    const title = `Call center lead passed 24 hours without contact: ${name}`;
+    const body = `${owner?.name || "The owner"} has not contacted this lead for ${hrs} hours.`;
+    await addNotifications([...to.map((u: string) => ({ userId: u, type: "escalation", leadId: x.l.id, title, body })), { userId: x.l.assigned_to, type: "escalation", leadId: x.l.id, title: `Your call center lead passed 24 hours: ${name}`, body: "Contact the customer now (call, WhatsApp or e-mail) and log it." }]);
+    for (const u of to) {
+      await emailUser(u, `ALERT: call center lead passed 24 hours - ${name}`, shell("Call center lead: no contact after 24 hours",
+        `<p style="color:#A6192E;font-weight:700">This call center lead has had no first contact for ${hrs} hours.</p>
+         <table>${row("Lead", name)}${row("Phone", x.d.phoneNumber)}${row("Project", x.d.project)}${row("Owner", owner?.name)}${row("Arrived / assigned", whenText(new Date(x.start)))}${row("Hours without contact", hrs)}</table>
+         ${btn(leadLink(baseUrl, x.l.id), `Open the lead: ${x.l.id}`)}`), "Escalation");
+    }
+  }
+  return { ccLate: late.length, ccSent: fresh.length };
+}
+
 export { nowIso };

@@ -4,7 +4,7 @@ import { useAuth } from '../services/AuthContext';
 import { Logo } from '../constants';
 import { NotificationBell } from './NotificationBell';
 import { getLang, setLang } from '../i18n/lang';
-import { setViewMode } from '../lib/viewMode';
+import { ViewSwitch } from './ViewSwitch';
 import { 
   LayoutDashboard, 
   Ticket, 
@@ -344,26 +344,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </button>
 
         <div className="relative p-6 flex flex-col items-center justify-center border-b border-white/10 min-h-[120px]">
-          <div className={`absolute z-20 ${isCollapsed ? 'top-1 left-1/2 -translate-x-1/2' : 'top-3 right-3'}`}><NotificationBell dark /></div>
+          <div className={`absolute z-20 ${isCollapsed ? 'top-1 left-1/2 -translate-x-1/2' : 'top-3 left-3'}`}><NotificationBell dark /></div>
           <div className="flex flex-col items-center transition-all duration-300">
             <div className={`p-1 transition-all duration-300 ${isCollapsed ? 'scale-75' : 'scale-100'}`}>
               <Logo height={isCollapsed ? "h-12" : "h-24"} />
             </div>
             {!isCollapsed && <h1 className="font-bold text-[11px] text-white/90 tracking-widest mt-1 uppercase whitespace-nowrap">W-CRM</h1>}
-            <button
-              onClick={() => setViewMode(user?.id, 'old')}
-              title="Switch to the old sales CRM look"
-              className="mt-2 text-[10px] font-bold text-white/80 border border-white/25 rounded-lg px-2 py-1 hover:bg-white/10 hover:text-white transition-colors whitespace-nowrap"
-            >
-              {isCollapsed ? '⇄' : '⇄ Switch to old view'}
-            </button>
-            <button
-              onClick={() => setViewMode(user?.id, 'glass')}
-              title="Switch to the Glass look"
-              className="mt-2 text-[10px] font-bold text-white/80 border border-white/25 rounded-lg px-2 py-1 hover:bg-white/10 hover:text-white transition-colors whitespace-nowrap"
-            >
-              {isCollapsed ? '✦' : '✦ Glass view'}
-            </button>
+            <ViewSwitch className="mt-3" />
           </div>
           <button 
             onClick={() => setIsOpen(false)}

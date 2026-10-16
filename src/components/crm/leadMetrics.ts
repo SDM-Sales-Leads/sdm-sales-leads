@@ -3,7 +3,7 @@
 // Formulas follow the sales team's previous CRM (migration/oldcrm/spec_A.md sections 4.8 and 5, spec_D.md sections 1-3).
 import type { Lead } from './types';
 import {
-  ACTIVE_EXCLUDE, PIPELINE_STATUSES, closingDate, isMarketingSource, leadScore, normProject, normSource, phoneIntl, statusStage,
+  ACTIVE_EXCLUDE, PIPELINE_STATUSES, channelOf, closingDate, isMarketingSource, leadScore, normProject, normSource, phoneIntl, statusStage,
 } from './leadConfig';
 
 // ---------------------------------------------------------------------------------------------
@@ -529,3 +529,19 @@ export function funnelRows(a: Agg) {
   ];
   return steps.map((s, i) => ({ ...s, ofAll: pc(s.n, a.total), carried: i === 0 ? null : pc(s.n, steps[i - 1].n), dropped: i === 0 ? 0 : Math.max(0, steps[i - 1].n - s.n) }));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Call center leads must get a first contact within 24 hours. The clock starts when the lead has arrived AND has an owner
+// (the later of the two). No contact by then = the team leader is alerted (server, scheduler). Same rule here, so the screen
+// and the alert always agree.
+// ---------------------------------------------------------------------------------------------
+export const CC_HOURS = 24;
+export interface CcState { leftMs: number; overdue: boolean; start: number }
+export function ccState(l: Lead, nowMs: number): CcState | null {
+  if (channelOf(l) !== 'Call Center' || !isOpen(l) || isMerged(l) || isEngaged(l)) return null;
+  const start = Math.max(Date.parse(l.date) || 0, Date.parse(l.assignedDate || '') || 0);
+  if (!start) return null;
+  const leftMs = start + CC_HOURS * 3600_000 - nowMs;
+  return { leftMs, overdue: leftMs < 0, start };
+}
+export const ccLeft = (ms: number) => { const a = Math.abs(ms), h = Math.floor(a / 3600_000), m = Math.floor((a % 3600_000) / 60_000); return `${h}h ${String(m).padStart(2, '0')}m`; };
