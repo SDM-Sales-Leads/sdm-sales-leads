@@ -5,6 +5,7 @@ import { crmService } from './crm/crmService';
 import { crmNav } from './crm/crmNav';
 import { isOpenStatus } from './crm/leadConfig';
 import { dayOf, todayISO } from './crm/leadMetrics';
+import { CrmCallCenter } from './crm/CrmCallCenter';
 
 const plus = (iso: string, n: number) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
 
@@ -59,6 +60,8 @@ export const GlassHome: React.FC = () => {
 
   return (
     <div className="space-y-5">
+      {/* people who phoned us and wait for a call back: the first thing everybody who owns them sees */}
+      <CrmCallCenter leads={crmService.getLeads() as any[]} onOpen={(l) => window.dispatchEvent(new CustomEvent('app-open-lead', { detail: { id: l.id } }))} />
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
         {kpi('Open leads', d.open.length, `${d.total.toLocaleString('en-US')} assigned to you`, Users, d.open)}
         {kpi('Follow-ups due', d.due.length, 'Today or overdue', PhoneCall, d.due)}

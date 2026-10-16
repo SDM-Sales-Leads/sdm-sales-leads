@@ -178,6 +178,11 @@ export function dayTask(l: Lead, today: string, nowMs: number, rates?: Map<strin
   rank += leadScore(l, srcRate, new Date(nowMs)) / 4;
   if (l.priority === 'VIP') rank += 40;
   if (sla === 'vip') rank += 400; else if (sla === 'neglect') rank += 150;
+  // a call center lead is somebody who phoned us and waits for a call back: first of the day, above everything else
+  if (kind === 'first') {
+    const cc = ccState(l, nowMs);
+    if (cc) { why = cc.overdue ? `Call center lead: LATE ${ccLeft(cc.leftMs)}, call now` : `Call center lead: call back within 24 h (${ccLeft(cc.leftMs)} left)`; rank += 3500; }
+  }
   return { lead: l, kind, level, why, when, rank, gap, sla, waitH };
 }
 

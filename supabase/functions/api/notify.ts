@@ -187,7 +187,25 @@ export async function escalateCallCenter() {
     const hrs = (now - start) / 3600_000;
     if (hrs >= 24 && hrs <= 72) late.push({ l, d, hrs, start });         // older than 3 days = history, never alerted
   }
-  if (!late.length) return { ccLate: 0 };
+  // call center leads nobody owns yet: Sales Operation is told after 4 hours, so the owner still has time inside the 24
+  const { data: orphans } = await admin.from("crm_leads").select("id,data").is("deleted_at", null).is("assigned_to", null).ilike("data->>channel", "call center").limit(300);
+  const lonely = (orphans || []).filter((l: any) => !CC_CLOSED.has(l.data?.status) && !isEngagedRow(l.data) && (() => { const h = (now - (Date.parse(l.data?.date) || 0)) / 3600_000; return h >= 4 && h <= 72; })());
+  if (lonely.length) {
+    const lk = lonely.map((l: any) => `ccun:${l.id}`); const seenL = new Set<string>();
+    for (let i = 0; i < lk.length; i += 100) { const { data: r } = await admin.from("crm_reminders_sent").select("key").in("key", lk.slice(i, i + 100)); (r || []).forEach((x: any) => seenL.add(x.key)); }
+    const newL = lonely.filter((l: any) => !seenL.has(`ccun:${l.id}`)).slice(0, 30);
+    if (newL.length) {
+      await admin.from("crm_reminders_sent").upsert(newL.map((l: any) => ({ key: `ccun:${l.id}` })));
+      const { data: opsU } = await admin.from("app_users").select("id").eq("role", "Sales Operation").neq("active", false);
+      const base0 = await appBase();
+      for (const u of (opsU || [])) {
+        await addNotifications(newL.map((l: any) => ({ userId: u.id, type: "escalation", leadId: l.id, title: `Call center lead has no owner: ${l.data?.customerName || l.id}`, body: "Assign it now: the customer is waiting for a call back." })));
+        await emailUser(u.id, `Call center leads without an owner (${newL.length})`, shell("Call center leads waiting for an owner",
+          `<p>These call center leads have no salesperson yet. The customers phoned us and wait for a call back within 24 hours.</p><ul style="padding-left:18px">${newL.slice(0, 25).map((l: any) => `<li>${escHtml(l.data?.customerName || "—")} — <a href="${escHtml(leadLink(base0, l.id))}" style="color:#A6192E;font-weight:700">${escHtml(l.id)}</a></li>`).join("")}</ul>`), "Escalation");
+      }
+    }
+  }
+  if (!late.length) return { ccLate: 0, ccUnowned: lonely.length };
   const keys = late.map((x) => `cc24:${x.l.id}`);
   const seen = new Set<string>();
   for (let i = 0; i < keys.length; i += 100) { const { data: r } = await admin.from("crm_reminders_sent").select("key").in("key", keys.slice(i, i + 100)); (r || []).forEach((x: any) => seen.add(x.key)); }

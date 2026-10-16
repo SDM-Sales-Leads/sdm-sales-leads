@@ -545,7 +545,14 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
       if (b.k === null) return -1;
       return a.k < b.k ? -dir : a.k > b.k ? dir : 0;
     });
-    return keyed.map((x) => x.l);
+    const sorted = keyed.map((x) => x.l);
+    // call center leads waiting for their first contact come first (most urgent on top) while the list is in its normal date order
+    if (sortField === 'date') {
+      const now = Date.now(); const cc: { l: Lead; left: number }[] = []; const rest: Lead[] = [];
+      for (const l of sorted) { const st = ccState(l, now); if (st) cc.push({ l, left: st.leftMs }); else rest.push(l); }
+      if (cc.length) { cc.sort((a, b) => a.left - b.left); return [...cc.map((x) => x.l), ...rest]; }
+    }
+    return sorted;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, salespeople, leads, searchTerm, filterStatus, filterProject, filterPriority, filterSource, filterSalesperson, savedView, xf, winRates, sortField, sortDirection, idPreset]);
 
@@ -1827,7 +1834,7 @@ ${user.name || ''}`);
 
       {bulkMsg && <CrmBulkMessage mode={bulkMsg} leads={(crmService.getLeads() as Lead[]).filter((l) => selectedSet.has(l.id))} userName={user?.name || 'Agent'} userId={user?.id != null ? String(user.id) : undefined} onClose={() => { setBulkMsg(null); onLeadsUpdated(); }} />}
 
-      <CrmCallCenter leads={filteredLeads} onOpen={setSelectedLead} />
+      <CrmCallCenter leads={leads} onOpen={setSelectedLead} />
 
       {/* -------------------- 1. LIST VIEW -------------------- */}
       {viewMode === 'list' && (
