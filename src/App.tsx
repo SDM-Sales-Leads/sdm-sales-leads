@@ -24,6 +24,8 @@ import { Menu } from 'lucide-react';
 import { Logo } from './constants';
 import { useViewMode } from './lib/viewMode';
 import { OldViewShell } from './components/OldViewShell';
+import { GlassShell } from './components/GlassShell';
+import { GlassHome } from './components/GlassHome';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 const AppContent: React.FC = () => {
@@ -37,6 +39,12 @@ const AppContent: React.FC = () => {
   const [selectedTicket, setSelectedTicket] = useState<TicketType | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const viewMode = useViewMode(user?.id);
+
+  // choosing the Glass look lands on its home; leaving it never leaves the (Glass-only) home page open
+  useEffect(() => {
+    if (viewMode === 'glass') setActiveTab((t) => (t === 'dashboard' ? 'glass-home' : t));
+    else setActiveTab((t) => (t === 'glass-home' ? 'dashboard' : t));
+  }, [viewMode]);
 
   // open a lead from anywhere: the bell, or the link in an e-mail (https://.../#lead=LD-1234, works after sign-in)
   useEffect(() => {
@@ -184,6 +192,7 @@ const AppContent: React.FC = () => {
                         setActiveTab('tickets');
                       }} />
                     )}
+                    {activeTab === 'glass-home' && <GlassHome />}
                     {activeTab === 'kb' && <KnowledgeBase />}
                     {activeTab === 'health' && <SystemHealth />}
                     {activeTab === 'workflow-sla' && <WorkflowSLAAlignment />}
@@ -194,6 +203,18 @@ const AppContent: React.FC = () => {
             </Suspense>
     </ErrorBoundary>
   );
+
+  if (viewMode === 'glass') {
+    return (
+      <GlassShell
+        activeTab={activeTab}
+        crmSubTab={crmSubTab}
+        go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }}
+      >
+        {pageContent}
+      </GlassShell>
+    );
+  }
 
   if (viewMode === 'old') {
     return (

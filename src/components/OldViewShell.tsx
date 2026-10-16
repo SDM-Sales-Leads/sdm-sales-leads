@@ -134,6 +134,13 @@ export const OldViewShell: React.FC<Props> = ({ activeTab, crmSubTab, go, childr
           >
             ⇄ Switch to the new view
           </button>
+          <button
+            onClick={() => setViewMode(user?.id, 'glass')}
+            className="mt-3 w-full text-[11px] font-bold border border-[#E6E7EA] rounded-lg py-1.5 hover:border-[#E01E25] hover:text-[#E01E25] transition-colors"
+            title="Switch to the Glass look"
+          >
+            ✦ Switch to the Glass view
+          </button>
         </div>
         <nav className="old-nav flex-1 overflow-y-auto py-3">
           {nav.map((n) => (

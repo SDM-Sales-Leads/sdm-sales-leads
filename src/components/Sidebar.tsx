@@ -357,6 +357,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               {isCollapsed ? '⇄' : '⇄ Switch to old view'}
             </button>
+            <button
+              onClick={() => setViewMode(user?.id, 'glass')}
+              title="Switch to the Glass look"
+              className="mt-2 text-[10px] font-bold text-white/80 border border-white/25 rounded-lg px-2 py-1 hover:bg-white/10 hover:text-white transition-colors whitespace-nowrap"
+            >
+              {isCollapsed ? '✦' : '✦ Glass view'}
+            </button>
           </div>
           <button 
             onClick={() => setIsOpen(false)}

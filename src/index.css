@@ -165,3 +165,26 @@
 html.lang-ar body, html.lang-ar .old-skin { font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", "Geeza Pro", system-ui, sans-serif; }
 html.lang-ar th, html.lang-ar td { text-align: start; }
 html.lang-ar .font-mono { direction: ltr; unicode-bidi: embed; }
+
+/* ---------------------------------------------------------------------------------------------
+   Glass view: dark frosted panels floating over a photo, white cards inside (GlassShell.tsx)
+   --------------------------------------------------------------------------------------------- */
+.glass-view { position: relative; height: 100vh; overflow: hidden; color: #fff; background: #151215; }
+.glass-bg { position: fixed; inset: -20px; background-size: cover; background-position: center; filter: blur(7px) saturate(.9); transform: scale(1.04); }
+.glass-bg::after { content: ""; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(18,14,16,.80) 0%, rgba(70,12,24,.55) 100%); }
+.glass-panel { background: rgba(26,24,28,.58); backdrop-filter: blur(24px) saturate(165%); -webkit-backdrop-filter: blur(24px) saturate(165%); border: 1px solid rgba(255,255,255,.10); border-radius: 28px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.glass-pop { background: rgba(30,28,32,.92); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,.12); border-radius: 16px; box-shadow: 0 16px 40px rgba(0,0,0,.45); color: #fff; }
+.glass-pill { background: rgba(26,24,28,.78); backdrop-filter: blur(18px); border: 1px solid rgba(255,255,255,.12); border-radius: 999px; box-shadow: 0 10px 30px rgba(0,0,0,.4); color: #fff; }
+.glass-sheet { background: rgba(255,255,255,.90); color: #2D2926; border-radius: 22px; box-shadow: 0 6px 24px rgba(0,0,0,.18); }
+.glass-card { background: rgba(255,255,255,.94); color: #2D2926; border-radius: 20px; box-shadow: 0 4px 18px rgba(0,0,0,.14); transition: transform .15s, box-shadow .15s; }
+button.glass-card:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(0,0,0,.22); }
+.glass-input { background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: .6rem .9rem .6rem 2.3rem; color: #fff; font-size: 13px; outline: none; }
+.glass-input::placeholder { color: rgba(255,255,255,.5); }
+.glass-input:focus { border-color: #A6192E; background: rgba(255,255,255,.14); }
+.glass-rail-btn { width: 46px; height: 46px; border-radius: 16px; display: inline-flex; align-items: center; justify-content: center; color: rgba(255,255,255,.62); background: transparent; transition: background .15s, color .15s; }
+.glass-rail-btn:hover { background: rgba(255,255,255,.10); color: #fff; }
+.glass-rail-btn.on { background: #A6192E; color: #fff; box-shadow: 0 8px 22px rgba(166,25,46,.5); }
+.glass-mini { width: 26px; height: 26px; border-radius: 9px; display: inline-flex; align-items: center; justify-content: center; background: rgba(255,255,255,.10); color: #fff; }
+.glass-mini:hover { background: rgba(255,255,255,.2); }
+.glass-view ::-webkit-scrollbar { width: 8px; } .glass-view ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border-radius: 8px; }
+.glass-sheet ::-webkit-scrollbar-thumb { background: rgba(0,0,0,.2); }
