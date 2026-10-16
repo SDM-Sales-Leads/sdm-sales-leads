@@ -1776,8 +1776,8 @@ ${user.name || ''}`);
           <div className="flex items-center gap-2 w-full sm:w-auto">
             {currentRole !== 'Read Only' && (
               <>
-                <button type="button" onClick={() => setBulkMsg('whatsapp')} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold px-3 py-2 rounded-xl shadow inline-flex items-center gap-1.5">WhatsApp</button>
-                <button type="button" onClick={() => setBulkMsg('email')} className="bg-white/90 hover:bg-white text-brand-black text-xs font-extrabold px-3 py-2 rounded-xl shadow inline-flex items-center gap-1.5">E-mail</button>
+                <button type="button" onClick={() => setBulkMsg('whatsapp')} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold px-3 py-2 rounded-xl shadow inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">WhatsApp</button>
+                <button type="button" onClick={() => setBulkMsg('email')} className="bg-white/90 hover:bg-white text-brand-black text-xs font-extrabold px-3 py-2 rounded-xl shadow inline-flex items-center gap-1.5 whitespace-nowrap shrink-0">E-mail</button>
               </>
             )}
             <select
