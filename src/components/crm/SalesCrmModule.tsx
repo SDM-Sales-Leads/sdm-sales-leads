@@ -11,7 +11,6 @@ const CrmLeads = lazy(() => import('./CrmLeads').then(m => ({ default: m.CrmLead
 const CrmContacts = lazy(() => import('./CrmContacts').then(m => ({ default: m.CrmContacts })));
 const CrmCompanies = lazy(() => import('./CrmCompanies').then(m => ({ default: m.CrmCompanies })));
 const CrmLeadQueue = lazy(() => import('./CrmLeadQueue').then(m => ({ default: m.CrmLeadQueue })));
-const CrmSalesApprovals = lazy(() => import('./CrmSalesApprovals').then(m => ({ default: m.CrmSalesApprovals })));
 const CrmAssignmentRules = lazy(() => import('./CrmAssignmentRules').then(m => ({ default: m.CrmAssignmentRules })));
 const CrmActivities = lazy(() => import('./CrmActivities').then(m => ({ default: m.CrmActivities })));
 const CrmReports = lazy(() => import('./CrmReports').then(m => ({ default: m.CrmReports })));
@@ -64,6 +63,8 @@ export const SalesCrmModule: React.FC<SalesCrmModuleProps> = ({
   const [localActiveSubTab, localSetActiveSubTab] = useState('dashboard');
   const activeSubTab = propActiveSubTab || localActiveSubTab;
   const setActiveSubTab = propSetActiveSubTab || localSetActiveSubTab;
+  // the Executive Board no longer is a page of its own: it is the top of Reports (old links and the default tab land there)
+  useEffect(() => { if (activeSubTab === 'dashboard') setActiveSubTab('reports'); }, [activeSubTab, setActiveSubTab]);
 
   // the dropdown lists the admin edits (Settings > Dropdown Lists): fetched once; when they changed, the screens are rebuilt with the new values
   const [listsVer, setListsVer] = useState(0);

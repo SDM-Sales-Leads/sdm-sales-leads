@@ -2408,7 +2408,77 @@ ${user.name || ''}`);
 
             {/* Inner Content */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 text-xs">
-              
+
+              {/* CRM Details Grid */}
+              <Collapse title="Customer details" defaultOpen summary={`${selectedLead.phoneNumber || 'no phone'} · ${selectedLead.project || 'project —'}`}>
+              <div className="grid grid-cols-2 gap-4 bg-white border border-brand-gray/15 rounded-xl p-4">
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer Name</span>
+                  <span className="font-extrabold text-brand-black text-xs">{selectedLead.customerName}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Project</span>
+                  <span className="font-extrabold text-brand-black text-xs">{selectedLead.project}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Contact Number</span>
+                  <span className="font-mono text-brand-black font-bold text-xs">{phoneIntl(selectedLead.phoneNumber) || selectedLead.phoneNumber || '—'}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer Email</span>
+                  <span className="text-brand-black text-xs">{selectedLead.email || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Corporate Company</span>
+                  <span className="text-brand-black text-xs font-bold">{selectedLead.companyName || 'Private Inquiry'}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Target Land Size</span>
+                  <span className="font-mono text-brand-black text-xs font-bold">{fmtSize(selectedLead.requiredSize)}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">SLA Status</span>
+                  <span className={`font-mono text-xs font-extrabold px-2 py-0.5 rounded-md ${getSlaStatus(selectedLead).isViolated ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'}`}>
+                    {getSlaStatus(selectedLead).isViolated ? `VIOLATED: ${getSlaStatus(selectedLead).remainingText}` : `ACTIVE: ${getSlaStatus(selectedLead).remainingText}`}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Channel</span>
+                  <span className="text-brand-black text-xs font-semibold">{channelOf(selectedLead) === NO_CHANNEL ? '—' : channelOf(selectedLead)}</span>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer ID</span>
+                  {(() => { const c = contactOf(selectedLead); return c ? (
+                    <button onClick={() => openContact(c)} className="font-mono text-xs font-bold text-brand-red hover:underline" title="Open this customer in Contacts">{c.serialNumber || c.id}</button>
+                  ) : <span className="text-brand-black text-xs">—</span>; })()}
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Lead Source</span>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-brand-black text-xs font-semibold">{selectedLead.source || '—'}</span>
+                    {selectedLead.emailId && (
+                      <button
+                        onClick={() => handleViewInboundEmail(selectedLead)}
+                        className="text-brand-red hover:underline text-[10px] font-bold flex items-center gap-1.5 w-fit mt-1 text-left"
+                      >
+                        <Mail size={12} className="inline" />
+                        <span>View Ingested Email</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Account Manager</span>
+                  <span className="text-indigo-600 text-xs font-bold flex items-center gap-1">
+                    <UserCheck size={12} />
+                    {selectedLead.assignedSalespersonName || 'Unassigned Queue'}
+                  </span>
+                </div>
+              </div>
+
+              </Collapse>
+
+
               {/* SLA / Priority strip */}
               {(() => {
                 const slaInfo = getSlaStatus(selectedLead);
@@ -2575,75 +2645,6 @@ ${user.name || ''}`);
                 onSaved={(u) => { setSelectedLead(u); onLeadsUpdated(); }}
                 onOpenLead={(id) => { const f = crmService.getLeads().find(x => x.id === id); if (f) setSelectedLead(f); }}
               />
-
-              {/* CRM Details Grid */}
-              <Collapse title="Customer details (summary)" summary={`${selectedLead.phoneNumber || 'no phone'} · ${selectedLead.project || 'project —'}`}>
-              <div className="grid grid-cols-2 gap-4 bg-white border border-brand-gray/15 rounded-xl p-4">
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer Name</span>
-                  <span className="font-extrabold text-brand-black text-xs">{selectedLead.customerName}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Project</span>
-                  <span className="font-extrabold text-brand-black text-xs">{selectedLead.project}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Contact Number</span>
-                  <span className="font-mono text-brand-black font-bold text-xs">{phoneIntl(selectedLead.phoneNumber) || selectedLead.phoneNumber || '—'}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer Email</span>
-                  <span className="text-brand-black text-xs">{selectedLead.email || 'N/A'}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Corporate Company</span>
-                  <span className="text-brand-black text-xs font-bold">{selectedLead.companyName || 'Private Inquiry'}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Target Land Size</span>
-                  <span className="font-mono text-brand-black text-xs font-bold">{fmtSize(selectedLead.requiredSize)}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">SLA Status</span>
-                  <span className={`font-mono text-xs font-extrabold px-2 py-0.5 rounded-md ${getSlaStatus(selectedLead).isViolated ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'}`}>
-                    {getSlaStatus(selectedLead).isViolated ? `VIOLATED: ${getSlaStatus(selectedLead).remainingText}` : `ACTIVE: ${getSlaStatus(selectedLead).remainingText}`}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Channel</span>
-                  <span className="text-brand-black text-xs font-semibold">{channelOf(selectedLead) === NO_CHANNEL ? '—' : channelOf(selectedLead)}</span>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Customer ID</span>
-                  {(() => { const c = contactOf(selectedLead); return c ? (
-                    <button onClick={() => openContact(c)} className="font-mono text-xs font-bold text-brand-red hover:underline" title="Open this customer in Contacts">{c.serialNumber || c.id}</button>
-                  ) : <span className="text-brand-black text-xs">—</span>; })()}
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Lead Source</span>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-brand-black text-xs font-semibold">{selectedLead.source || '—'}</span>
-                    {selectedLead.emailId && (
-                      <button
-                        onClick={() => handleViewInboundEmail(selectedLead)}
-                        className="text-brand-red hover:underline text-[10px] font-bold flex items-center gap-1.5 w-fit mt-1 text-left"
-                      >
-                        <Mail size={12} className="inline" />
-                        <span>View Ingested Email</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-brand-gray text-[10px] font-bold uppercase tracking-wider block mb-0.5">Account Manager</span>
-                  <span className="text-indigo-600 text-xs font-bold flex items-center gap-1">
-                    <UserCheck size={12} />
-                    {selectedLead.assignedSalespersonName || 'Unassigned Queue'}
-                  </span>
-                </div>
-              </div>
-
-              </Collapse>
 
               {/* Description Comments */}
               <div>

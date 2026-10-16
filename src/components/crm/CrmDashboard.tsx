@@ -15,6 +15,8 @@ import { PRIORITIES, SOURCES } from './leadConfig';
 
 interface CrmDashboardProps {
   leads: Lead[];
+  /** inside the Reports page: that page owns the filters (one filter bar for the whole dashboard) and the page title */
+  filters?: Filters;
 }
 
 const COLORS = ['#D32F2F', '#1976D2', '#388E3C', '#FBC02D', '#7B1FA2', '#00796B', '#E64A19', '#F57C00'];
@@ -25,11 +27,13 @@ const fmtSpan = (days: number | null) => {
   return `${days.toFixed(1)} days`;
 };
 
-export const CrmDashboard: React.FC<CrmDashboardProps> = ({ leads }) => {
+export const CrmDashboard: React.FC<CrmDashboardProps> = ({ leads, filters }) => {
   const { user, permissions } = useAuth();
   const scope = crmScopeOf(user, permissions);
   const manager = isManagerScope(scope);
-  const [f, setF] = useState<Filters>(DEFAULT_FILTERS);
+  const [own, setF] = useState<Filters>(DEFAULT_FILTERS);
+  const f = filters ?? own;
+  const embedded = !!filters;
 
   // one pass over the leads; every filter change afterwards is O(n)
   const all = useMemo(() => prepare(leads), [leads]);
@@ -80,6 +84,7 @@ export const CrmDashboard: React.FC<CrmDashboardProps> = ({ leads }) => {
 
   return (
     <div className="space-y-6" id="crm-dashboard-root">
+      {!embedded && (<>
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
         <div>
           <h2 className="text-2xl font-bold text-brand-black tracking-tight font-sans">CRM Executive Cockpit</h2>
@@ -90,6 +95,8 @@ export const CrmDashboard: React.FC<CrmDashboardProps> = ({ leads }) => {
       </div>
 
       <FilterBar f={f} set={setF} owners={manager ? owners : undefined} sources={sources} rangeLabel={`${range.label} · ${pool.length} leads`} />
+
+      </>)}
 
       {/* 12 KPI tiles */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">

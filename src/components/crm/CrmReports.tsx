@@ -1,4 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+const CrmDashboard = lazy(() => import('./CrmDashboard').then((m) => ({ default: m.CrmDashboard })));
 import { Lead } from './types';
 import { Printer } from 'lucide-react';
 import { crmService } from './crmService';
@@ -158,17 +159,8 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
       {tab === 'forecast' && <ForecastTab c={ctx} />}
 
       {tab === 'overview' && (<>
-      {/* headline */}
-      <Card title="At a glance" info="Leads of the period = lead date inside the window, plus deals won inside it. Conversion = won ÷ those leads (open leads still count, so a young period reads low). Win rate (decided) = won ÷ (won + lost): open leads are left out. Average deal = won value ÷ won deals that carry a value.">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-          <Kpi label="Leads" value={t.total} info="Leads of the period." />
-          <Kpi label="Conversion" value={fmtPct(convOf(headline), 1)} sub={`${t.won} won of ${t.total}`} info="Won ÷ leads of the period." />
-          <Kpi label="Win rate (decided)" value={fmtPct(decidedWinOf(headline), 1)} sub={`${t.won} won · ${t.lost} lost`} info="Won ÷ (won + lost). Lost = Lost, Not Interested, Low Budget." />
-          <Kpi label="Average deal" value={t.wonWithValue ? fmtEGP(t.wonValue / t.wonWithValue) : '—'} info="Won value ÷ won deals that carry a value." />
-          <Kpi label="Avg lead → deal" value={mean(t.cycles) == null ? '—' : `${Math.round(mean(t.cycles)!)} d`} sub={`${t.cycles.length} deals measured`} info="Mean days from lead date to won date, deals with both dates only." />
-          <Kpi label="Open pipeline" value={t.openWithValue ? fmtEGP(t.pipelineValue) : '—'} sub={`${t.open} open leads`} info="Deal value of open leads that carry one (unweighted)." />
-        </div>
-      </Card>
+      {/* the former Executive Board: headline figures, funnel, intake, speed and (for managers) the team's day */}
+      <Suspense fallback={<p className="text-brand-gray py-6 text-center">Loading…</p>}><CrmDashboard leads={leads} filters={f} /></Suspense>
 
       {/* deals won */}
       <Card title="Deals won" info="Leads with status Won whose closing date is in the period (typed closing date, else EOI date on the EOI path, else reservation / EOI / contract date, else lead date). Value is the cash value in EGP. 'Cash pending' = Accounts Receivable has not confirmed the cash yet; only Accounts Receivable can confirm.">
