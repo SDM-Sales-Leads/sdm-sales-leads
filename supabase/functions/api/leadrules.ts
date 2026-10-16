@@ -66,6 +66,8 @@ export function sanitizeLead(d: any, ex: any | null, c: Caller, scope: CrmScope,
     const old = ex.data || {};
     if (scope !== "all") for (const k of PROTECTED_FOR_REPS) { if (k === "contract" && c.perms.canManageContracts === true) continue; if (old[k] === undefined) delete d[k]; else d[k] = old[k]; }
     if (!canCash) for (const k of CASH_FIELDS) { if (old[k] === undefined) delete d[k]; else d[k] = old[k]; }
+    // once accounts receivable confirmed the cash, the deal is locked: only a re-open by accounts receivable unlocks it
+    if (old.cashStatus === "confirmed" && c.perms.canConfirmCash !== true) for (const k of ["status", "dealValue", "totalSoldValue", "soldArea", "plotNo", "wonDate"]) { if (old[k] === undefined) delete d[k]; else d[k] = old[k]; }
     // the history of a lead is append-only: whatever the browser sends, earlier entries stay
     for (const k of ["timeline", "comments"]) {
       if (Array.isArray(old[k]) && old[k].length) {

@@ -332,6 +332,8 @@ export const CrmLeads: React.FC<CrmLeadsProps> = ({ leads, onLeadsUpdated, curre
   const [interactionNotes, setInteractionNotes] = useState('');
   const [interactionDate, setInteractionDate] = useState(localISO(new Date()));
   const [interactionTime, setInteractionTime] = useState('10:00');
+  // a logged call / WhatsApp / e-mail happened just now; meetings and visits keep their 10:00 starting point
+  useEffect(() => { if (showInteractionModal === 'call' || showInteractionModal === 'whatsapp' || showInteractionModal === 'email') { const n = new Date(); setInteractionDate(localISO(n)); setInteractionTime(`${String(n.getHours()).padStart(2, '0')}:${String(n.getMinutes()).padStart(2, '0')}`); } }, [showInteractionModal]);
   const [interactionLocation, setInteractionLocation] = useState('');
   const [interactionProjectName, setInteractionProjectName] = useState('');
   const [interactionSiteEmail, setInteractionSiteEmail] = useState('');

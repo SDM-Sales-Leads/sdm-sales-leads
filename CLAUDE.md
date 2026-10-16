@@ -16,6 +16,10 @@ checks role and row access, then uses the service role.
 - Edge function bundle: `npx esbuild supabase/functions/api/index.ts --bundle --format=esm --platform=neutral --target=es2022 --external:'npm:*' --outfile=dist-fn/api.js`
 - Check Node with `which node` first; do not rely on an old temp path.
 
+## Menu and looks
+- ONE menu list: `src/components/navGroups.ts` (12 groups, tabs, role rules). All three looks (Current `Sidebar.tsx`, Classic `OldViewShell.tsx`, Glass `GlassShell.tsx` + `MobileTabBar.tsx`) read it. Never add a menu entry in a look itself.
+- Server bundle deploy: build with esbuild, open the Supabase function code page in the built-in browser, inject a file input, Walid picks `dist-fn/api.js` and presses Deploy. Notifications stay on hold until Walid says "unhold".
+
 ## Rules
 - Our system is the main project: keep its look and conventions (brand-red, brand-gray, rounded-2xl, lucide icons, sonner toasts, motion).
   Extend an existing feature; never build a second copy.

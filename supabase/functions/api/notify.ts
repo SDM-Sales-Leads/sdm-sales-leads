@@ -24,7 +24,7 @@ const shell = (head: string, inner: string) => `<div style="font-family:Segoe UI
 const btn = (href: string, text: string) => `<p style="margin:18px 0"><a href="${escHtml(href)}" style="color:#A6192E;font-weight:700">${escHtml(text)}</a></p>`;
 const row = (k: string, v?: string | number | null) => (v === undefined || v === null || v === "" ? "" : `<tr><td style="padding:3px 14px 3px 0;color:#777;vertical-align:top">${escHtml(k)}</td><td style="padding:3px 0"><b>${escHtml(String(v))}</b></td></tr>`);
 
-/** The hold switch (system_config "notify_hold"). ON unless the value is false: nothing is stored or e-mailed while it is on. */
+/** The hold switch (system_config "notify_hold"). ON unless the value is false: while it is on, the in-system bell still works but NO e-mail is sent. */
 let holdAt = 0, holdVal = true;
 export async function notifyOnHold(): Promise<boolean> {
   if (Date.now() - holdAt > 15_000) { holdVal = (await getConfig<any>("notify_hold", true)) !== false; holdAt = Date.now(); }
@@ -33,7 +33,7 @@ export async function notifyOnHold(): Promise<boolean> {
 export const resetHoldCache = () => { holdAt = 0; };
 
 export async function addNotifications(rows: { userId: string; type: string; leadId?: string; title: string; body?: string }[]) {
-  if (!rows.length || await notifyOnHold()) return;
+  if (!rows.length) return;
   await admin.from("crm_notifications").insert(rows.map((r) => ({ user_id: r.userId, type: r.type, lead_id: r.leadId || null, title: str(r.title, 200), body: str(r.body || "", 1500) })));
 }
 
@@ -150,8 +150,7 @@ export async function runReminders() {
   const fresh = ready.filter((r) => !sentKeys.has(r.key)).slice(0, 60);       // a burst is spread over the next runs
   if (!fresh.length) return { checked: due.length, sent: 0 };
   const baseUrl = await appBase();
-  await admin.from("crm_reminders_sent").upsert(fresh.map((r) => ({ key: r.key })));      // on hold: they are marked as done and never sent later
-  if (await notifyOnHold()) return { checked: due.length, sent: 0, held: fresh.length };
+  await admin.from("crm_reminders_sent").upsert(fresh.map((r) => ({ key: r.key })));
   await addNotifications(fresh.map((r) => ({ userId: r.userId, type: "reminder", leadId: r.leadId, title: `${r.kind}: ${r.title}`, body: whenText(r.when) })));
   for (const r of fresh) {
     await emailUser(r.userId, `Reminder: ${r.title}`, shell(`Reminder: ${r.kind}`,
@@ -176,7 +175,6 @@ export async function escalateCallCenter() {
   const now = Date.now();
   const hour = +(CAIRO_PARTS(new Date(now)) as any).hour;
   if (hour < 7 || hour >= 23) return { ccSkipped: "outside 07:00-23:00 Cairo" };
-  if (await notifyOnHold()) return { ccHeld: true };
   const { data } = await admin.from("crm_leads").select("id,assigned_to,data").is("deleted_at", null).not("assigned_to", "is", null).ilike("data->>channel", "call center").limit(800);
   const late: any[] = [];
   for (const l of data || []) {
