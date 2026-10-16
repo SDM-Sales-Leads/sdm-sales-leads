@@ -1,5 +1,6 @@
 import { crmService } from './crm/crmService';
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { buildGroups, groupOf } from './navGroups';
 import { useAuth } from '../services/AuthContext';
 import { Logo } from '../constants';
 import { NotificationBell } from './NotificationBell';
@@ -317,8 +318,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'import-export', label: 'Bulk Transfer', icon: UploadCloud, permission: permissions?.canViewSalesTransfer },
   ];
 
-  const filteredMenu = menuItems.filter(item => item.permission);
-  const filteredCrmSubTabs = crmSubTabs.filter(item => item.permission);
+  const groups = useMemo(() => buildGroups(permissions, user?.role), [permissions, user?.role]);
+  const activeGroup = groupOf(groups, activeTab, crmSubTab);
 
   return (
     <>
@@ -361,64 +362,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         <div className="flex-1 py-6 px-3 space-y-2 overflow-y-auto ">
-          {filteredMenu.map((item) => {
-            const isCrm = item.id === 'sales-crm';
+          {groups.map((g) => {
+            const on = g.id === activeGroup?.id;
+            const Icon = g.icon;
             return (
-              <div key={item.id} className="space-y-1">
-                <button
-                  title={isCollapsed ? item.label : undefined}
-                  onClick={() => {
-                    setActiveTab(item.id);
-                    if (isCrm) {
-                      setIsCrmExpanded(!isCrmExpanded);
-                      if (isCollapsed) setIsCollapsed(false);
-                    } else {
-                      setIsOpen(false);
-                    }
-                  }}
-                  className={`w-full flex items-center justify-between px-3 py-3 rounded-xl transition-all group ${
-                    activeTab === item.id 
-                      ? 'bg-brand-red text-white shadow-lg shadow-brand-red/20' 
-                      : 'text-white/60 hover:bg-white/5 hover:text-white'
-                  } ${isCollapsed ? 'justify-center' : ''}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <item.icon size={20} className={isCollapsed ? 'mx-auto' : ''} />
-                    {!isCollapsed && <span className="font-medium whitespace-nowrap">{item.label}</span>}
-                  </div>
-                  {isCrm && !isCollapsed && (
-                    isCrmExpanded ? <ChevronDown size={16} className="text-white/60" /> : <ChevronRight size={16} className="text-white/60" />
-                  )}
-                </button>
-
-                {isCrm && isCrmExpanded && !isCollapsed && (
-                  <div className="pl-6 pr-2 py-1 space-y-1 border-l border-white/10 ml-5 overflow-hidden">
-                    {filteredCrmSubTabs.map((subTab) => {
-                      const isSubActive = activeTab === 'sales-crm' && crmSubTab === subTab.id;
-                      const SubIcon = subTab.icon;
-                      return (
-                        <button
-                          key={subTab.id}
-                          title={subTab.label}
-                          onClick={() => {
-                            setActiveTab('sales-crm');
-                            setCrmSubTab(subTab.id);
-                            setIsOpen(false);
-                          }}
-                          className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap ${
-                            isSubActive
-                              ? 'bg-white/15 text-white font-bold'
-                              : 'text-white/50 hover:bg-white/5 hover:text-white'
-                          }`}
-                        >
-                          <SubIcon size={14} className="flex-shrink-0" />
-                          <span className="truncate">{subTab.label}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              <button
+                key={g.id}
+                title={isCollapsed ? g.label : undefined}
+                onClick={() => { setActiveTab(g.items[0].tab); if (g.items[0].sub) setCrmSubTab(g.items[0].sub); setIsOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-all ${on ? 'bg-brand-red text-white shadow-lg shadow-brand-red/20' : 'text-white/60 hover:bg-white/5 hover:text-white'} ${isCollapsed ? 'justify-center' : ''}`}
+              >
+                <Icon size={20} className={isCollapsed ? 'mx-auto' : ''} />
+                {!isCollapsed && <span className="font-medium whitespace-nowrap">{g.label}</span>}
+              </button>
             );
           })}
         </div>

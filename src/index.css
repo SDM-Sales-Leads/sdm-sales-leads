@@ -204,3 +204,14 @@ button.glass-card:hover { transform: translateY(-2px); box-shadow: 0 10px 26px r
   input, select, textarea { font-size: 16px; }              /* no zoom-in when a field is tapped on iPhone */
   button, [role="button"], a { touch-action: manipulation; }
 }
+
+/* section tabs above every page */
+.gtabs { display: flex; gap: 6px; overflow-x: auto; padding: 2px 0 14px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.gtabs::-webkit-scrollbar { display: none; }
+.gtabs button { flex: 0 0 auto; white-space: nowrap; padding: 8px 16px; border-radius: 999px; font-size: 12.5px; font-weight: 700; color: #6C737E; background: rgba(0,0,0,.05); border: 1px solid transparent; transition: background .15s, color .15s; }
+.gtabs button:hover { background: rgba(0,0,0,.09); color: #2D2926; }
+.gtabs button.on { background: #A6192E; color: #fff; box-shadow: 0 4px 14px rgba(166,25,46,.35); }
+.gtabs.on-dark button { background: rgba(255,255,255,.10); color: rgba(255,255,255,.75); }
+.gtabs.on-dark button.on { background: #A6192E; color: #fff; }
+.glass-home-h { color: #2D2926; }
+.glass-view .glass-home-h { color: #fff; }

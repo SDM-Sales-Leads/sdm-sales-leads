@@ -6,53 +6,14 @@ import { Logo } from '../constants';
 import { NotificationBell } from './NotificationBell';
 import { crmService } from './crm/crmService';
 import { ViewSwitch } from './ViewSwitch';
+import { buildGroups, groupOf } from './navGroups';
 import { todayISO } from './crm/leadMetrics';
 
 export interface OldNavItem { id: string; tab: string; sub?: string; icon: string; label: string; show: boolean }
 
+/** the classic look uses the same groups as the other looks (one menu), with its own symbols */
 export function buildOldNav(p: any, role?: string): OldNavItem[] {
-  const manage = !!(p?.canViewSalesDashboard || p?.canViewSalesRules);
-  const crm = !!(p?.canViewSalesCrm || p?.canViewSalesLeads);
-  const fin = !!p?.canViewSalesFinance;
-  const items: OldNavItem[] = [
-    { id: 'day', tab: 'sales-crm', sub: manage ? 'dashboard' : 'my-day', icon: '◧', label: manage ? 'Team Day' : 'My Day', show: crm },
-    { id: 'leads', tab: 'sales-crm', sub: 'leads', icon: '☰', label: manage ? 'Leads' : 'My Leads', show: !!p?.canViewSalesLeads },
-    { id: 'finance', tab: 'sales-crm', sub: 'finance', icon: '✓', label: 'Won Deals', show: fin },
-    { id: 'reports', tab: 'sales-crm', sub: 'reports', icon: '▤', label: fin && !manage ? 'Revenue Reports' : 'Team Reports', show: !!p?.canViewSalesReports },
-    { id: 'team-perf', tab: 'sales-crm', sub: 'team-performance', icon: '👥', label: 'Team Performance', show: !!p?.canViewSalesReports },
-    { id: 'lb-activity', tab: 'sales-crm', sub: 'lb-activity', icon: '🏢', label: 'Land Bank Activity', show: !!(p?.canViewSalesReports || p?.canViewSalesLeads) },
-    { id: 'bd', tab: 'sales-crm', sub: 'bd-tracker', icon: '📋', label: 'BD Tracker', show: ['Business Development', 'Admin', 'Sales Operation', 'Sales Director', 'Executive (View)'].includes(role || '') },
-    { id: 'calendar', tab: 'sales-crm', sub: 'calendar', icon: '▦', label: 'Calendar', show: crm },
-    { id: 'achievements', tab: 'sales-crm', sub: 'achievements', icon: '🏅', label: 'Achievements', show: crm && !manage },
-    { id: 'guide', tab: 'sales-crm', sub: 'guide', icon: '🎓', label: 'How to use', show: crm },
-    { id: 'offers', tab: 'sales-crm', sub: 'offers', icon: '📄', label: 'Offers', show: !!p?.canViewSalesLeads },
-    { id: 'contracts', tab: 'sales-crm', sub: 'contracts', icon: '📜', label: 'Contracts', show: !!p?.canViewSalesContracts },
-    { id: 'ct-control', tab: 'sales-crm', sub: 'contract-control', icon: '🎛', label: 'Control Centre', show: !!p?.canViewSalesContracts },
-    { id: 'ct-blockers', tab: 'sales-crm', sub: 'ct-blockers', icon: '🚧', label: 'Construction', show: !!p?.canViewSalesContracts },
-    { id: 'ct-import', tab: 'sales-crm', sub: 'contract-import', icon: '⬆', label: 'Contract Excel', show: !!p?.canViewSalesContracts },
-    { id: 'ct-reports', tab: 'sales-crm', sub: 'ct-reports', icon: '📈', label: 'Contract Reports', show: !!p?.canViewSalesContracts },
-    { id: 'hierarchy', tab: 'sales-crm', sub: 'hierarchy', icon: '◬', label: 'Hierarchy', show: manage },
-    { id: 'targets', tab: 'sales-crm', sub: 'targets', icon: '◎', label: manage ? 'Targets' : 'My Report', show: !!p?.canViewSalesTargets },
-    { id: 'ext', tab: 'sales-crm', sub: 'external-sales', icon: '↗', label: 'External Sales', show: !!p?.canViewSalesExternal },
-    { id: 'data', tab: 'sales-crm', sub: 'import-export', icon: '⇅', label: 'Excel & Data', show: !!p?.canViewSalesTransfer },
-    // functions of the new system, kept reachable so nothing is lost by choosing the old look
-    { id: 'contacts', tab: 'sales-crm', sub: 'contacts', icon: '☎', label: 'Contacts', show: !!p?.canViewSalesContacts },
-    { id: 'companies', tab: 'sales-crm', sub: 'companies', icon: '🏢', label: 'Corporate Accounts', show: !!p?.canViewSalesCompanies },
-    { id: 'queue', tab: 'sales-crm', sub: 'queue', icon: '✉', label: 'Mail Ingestion', show: !!p?.canViewSalesMail },
-    { id: 'rules', tab: 'sales-crm', sub: 'rules', icon: '⚙', label: 'Routing Rules', show: !!p?.canViewSalesRules },
-    { id: 'activities', tab: 'sales-crm', sub: 'activities', icon: '⌁', label: 'Activities Feed', show: !!p?.canViewSalesActivities },
-    { id: 'plots', tab: 'sales-crm', sub: 'plots-inventory', icon: '▧', label: 'Plots Inventory', show: !!p?.canViewSalesPlotsInventory },
-    { id: 'duplicates', tab: 'sales-crm', sub: 'duplicates', icon: '⧉', label: 'Duplicates', show: !!(p?.canViewSalesTransfer || p?.canViewSalesRules) },
-    { id: 'audit', tab: 'sales-crm', sub: 'audit', icon: '🛡', label: 'Lead Audit Trail', show: !!p?.canViewSalesAudit },
-    { id: 'dash', tab: 'dashboard', icon: '◨', label: 'Service Desk Dashboard', show: !!p?.canViewDashboard },
-    { id: 'tickets', tab: 'tickets', icon: '🎫', label: 'Tickets', show: !!p?.canViewTickets },
-    { id: 'new-ticket', tab: 'new-ticket', icon: '＋', label: 'New Ticket', show: !!p?.canViewTickets },
-    { id: 'kb', tab: 'kb', icon: '📚', label: 'Knowledge Base', show: !!p?.canViewKnowledgeBase },
-    { id: 'workflow', tab: 'workflow-sla', icon: '⇄', label: 'Workflow & SLA', show: !!p?.canViewWorkflowBuilder },
-    { id: 'health', tab: 'health', icon: '♥', label: 'System Health', show: !!p?.canViewAdminPanel },
-    { id: 'admin', tab: 'admin', icon: '◫', label: manage ? 'Team & Admin' : 'Admin Panel', show: !!p?.canViewAdminPanel },
-  ];
-  return items.filter((i) => i.show);
+  return buildGroups(p, role).map((g) => ({ id: g.id, tab: g.items[0].tab, sub: g.items[0].sub, icon: g.emoji, label: g.label, show: true }));
 }
 
 interface Props {
@@ -68,7 +29,9 @@ export const OldViewShell: React.FC<Props> = ({ activeTab, crmSubTab, go, childr
   const [q, setQ] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
   const nav = useMemo(() => buildOldNav(permissions, user?.role), [permissions, user?.role]);
-  const current = nav.find((n) => n.tab === activeTab && (n.sub ? n.sub === crmSubTab : true));
+  const groups = useMemo(() => buildGroups(permissions, user?.role), [permissions, user?.role]);
+  const curGroup = groupOf(groups, activeTab, crmSubTab);
+  const current = nav.find((n) => n.id === curGroup?.id);
 
   // the old look uses its own font and always the light theme; both are undone when the person switches back
   useEffect(() => {

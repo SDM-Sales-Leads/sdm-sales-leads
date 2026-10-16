@@ -18,13 +18,11 @@ interface CrmReportsProps {
   leads: Lead[];
 }
 
-const CrmLbActivity = lazy(() => import('./CrmLbActivity').then((m) => ({ default: m.CrmLbActivity })));
-const CrmTeamPerformance = lazy(() => import('./CrmTeamPerformance').then((m) => ({ default: m.CrmTeamPerformance })));
-type Tab = 'overview' | 'funnel' | 'trend' | 'winloss' | 'channels' | 'demand' | 'service' | 'forecast' | 'team' | 'lbactivity' | 'marketing';
+type Tab = 'overview' | 'funnel' | 'trend' | 'winloss' | 'channels' | 'demand' | 'service' | 'forecast' | 'marketing';
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview', label: 'Overview' }, { id: 'funnel', label: 'Funnel & aging' }, { id: 'trend', label: 'Leads over time' }, { id: 'winloss', label: 'Win / loss' },
   { id: 'channels', label: 'Channels & sources' }, { id: 'demand', label: 'Projects & demand' }, { id: 'service', label: 'Response & follow-up' },
-  { id: 'forecast', label: 'Closing forecast' }, { id: 'team', label: 'Team performance' }, { id: 'lbactivity', label: 'Land Bank activity' },
+  { id: 'forecast', label: 'Closing forecast' },
   { id: 'marketing', label: 'Marketing lists' },
 ];
 
@@ -158,8 +156,6 @@ export const CrmReports: React.FC<CrmReportsProps> = ({ leads }) => {
       {tab === 'demand' && <DemandTab c={ctx} />}
       {tab === 'service' && <ServiceTab c={ctx} />}
       {tab === 'forecast' && <ForecastTab c={ctx} />}
-      {tab === 'lbactivity' && <Suspense fallback={<p className="text-brand-gray py-6 text-center">Loading…</p>}><CrmLbActivity /></Suspense>}
-      {tab === 'team' && <Suspense fallback={<p className="text-brand-gray py-6 text-center">Loading…</p>}><CrmTeamPerformance leads={leads} filters={f} /></Suspense>}
 
       {tab === 'overview' && (<>
       {/* headline */}

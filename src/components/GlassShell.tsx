@@ -10,16 +10,17 @@ import { dayOf, todayISO } from './crm/leadMetrics';
 import { isOpenStatus } from './crm/leadConfig';
 import { ViewSwitch } from './ViewSwitch';
 import { getLang, setLang } from '../i18n/lang';
-import { buildGlassNav, NavEntry } from './navModel';
+import { buildGroups, groupOf, isHere, NavGroup, NavItem } from './navGroups';
 
-const RAIL = ['glass-home', 'crm-leads', 'crm-contacts', 'crm-reports', 'crm-calendar', 'tickets', 'admin'];
+const RAIL = ['home', 'leads', 'customers', 'land', 'deals', 'reports', 'targets'];
 const PANEL_KEY = 'sdm_glass_panel';
 
 /** The Glass look: dark frosted panels floating over a photo, white cards inside. Same pages, same logic as the other two looks. */
 export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (tab: string, sub?: string) => void; children: React.ReactNode }> = ({ activeTab, crmSubTab, go, children }) => {
   const { user, permissions, logout } = useAuth();
-  const nav = useMemo(() => buildGlassNav(permissions, user?.role), [permissions, user?.role]);
-  const all = useMemo(() => [...nav.general, ...nav.crm].filter((n) => n.show), [nav]);
+  const groups = useMemo(() => buildGroups(permissions, user?.role), [permissions, user?.role]);
+  const curGroup = groupOf(groups, activeTab, crmSubTab);
+  const curItem = curGroup?.items.find((i) => isHere(i, activeTab, crmSubTab));
   const [menu, setMenu] = useState(false);
   const [panel, setPanel] = useState(() => { try { return localStorage.getItem(PANEL_KEY) !== 'off'; } catch { return true; } });
   const [q, setQ] = useState('');
@@ -29,9 +30,7 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
   const [month, setMonth] = useState(() => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
 
   const togglePanel = () => setPanel((p) => { const n = !p; try { localStorage.setItem(PANEL_KEY, n ? 'on' : 'off'); } catch { /* ignore */ } return n; });
-  const here = (n: NavEntry) => n.tab === activeTab && (n.sub ? n.sub === crmSubTab : true);
-  const current = all.find(here);
-  const pick = (n: NavEntry) => { setMenu(false); go(n.tab, n.sub); };
+  const pick = (n: NavItem) => { setMenu(false); go(n.tab, n.sub); };
 
   // the lists are loaded once for the side panel and the home (cheap: the page does the same when it opens)
   useEffect(() => {
@@ -69,9 +68,9 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
   const first = (user?.name || '').trim().split(/\s+/)[0] || '';
   const hour = new Date().getHours();
   const isHome = activeTab === 'glass-home';
-  const title = isHome ? `${hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening'}, ${first} 👋` : current?.label || '';
+  const title = isHome ? `${hour < 12 ? 'Good Morning' : hour < 18 ? 'Good Afternoon' : 'Good Evening'}, ${first} 👋` : curItem?.label || '';
   const sub = isHome ? "Let's close some deals today" : 'Elsewedy Industrial Development';
-  const rail = RAIL.map((id) => all.find((n) => n.id === id)).filter(Boolean) as NavEntry[];
+  const rail = RAIL.map((id) => groups.find((g) => g.id === id)).filter(Boolean) as NavGroup[];
 
   const monthDays = useMemo(() => {
     const y = month.getFullYear(), m = month.getMonth();
@@ -80,9 +79,9 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
     return [...Array(lead).fill(null), ...Array.from({ length: n }, (_, i) => new Date(y, m, i + 1).toLocaleDateString('en-CA'))] as (string | null)[];
   }, [month]);
 
-  const railBtn = (n: NavEntry) => {
-    const I = n.icon, on = here(n);
-    return <button key={n.id} type="button" title={n.label} onClick={() => pick(n)} className={`glass-rail-btn ${on ? 'on' : ''}`}><I size={20} /></button>;
+  const railBtn = (g: NavGroup) => {
+    const I = g.icon, on = g.id === curGroup?.id;
+    return <button key={g.id} type="button" title={g.label} onClick={() => pick(g.items[0])} className={`glass-rail-btn ${on ? 'on' : ''}`}><I size={20} /></button>;
   };
 
   return (
@@ -179,16 +178,16 @@ export const GlassShell: React.FC<{ activeTab: string; crmSubTab: string; go: (t
         <div className="fixed inset-0 z-[9990] flex items-start justify-center p-4 md:p-10 bg-black/45 backdrop-blur-sm" onClick={() => setMenu(false)}>
           <div className="glass-panel w-full max-w-3xl max-h-[85vh] overflow-y-auto p-5 md:p-6 text-white" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4"><b className="text-lg">All menus</b><button type="button" className="glass-mini" onClick={() => setMenu(false)}><X size={16} /></button></div>
-            {([['General', nav.general], ['Inquiries Sales', nav.crm]] as [string, NavEntry[]][]).map(([name, items]) => (
-              <div key={name} className="mb-5">
-                <p className="text-[10px] uppercase tracking-widest text-white/45 font-bold mb-2">{name}</p>
+            {groups.map((g) => { const GI = g.icon; return (
+              <div key={g.id} className="mb-4">
+                <p className="text-[10px] uppercase tracking-widest text-white/45 font-bold mb-2 flex items-center gap-1.5"><GI size={12} />{g.label}</p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                  {items.filter((n) => n.show).map((n) => { const I = n.icon; return (
-                    <button key={n.id} type="button" onClick={() => pick(n)} className={`flex items-center gap-2.5 text-left rounded-xl px-3 py-2.5 text-[13px] font-semibold border ${here(n) ? 'bg-brand-red border-brand-red' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}><I size={16} />{n.label}</button>
-                  ); })}
+                  {g.items.map((n) => (
+                    <button key={n.id} type="button" onClick={() => pick(n)} className={`text-left rounded-xl px-3 py-2.5 text-[13px] font-semibold border ${isHere(n, activeTab, crmSubTab) ? 'bg-brand-red border-brand-red' : 'bg-white/5 border-white/10 hover:bg-white/10'}`}>{n.label}</button>
+                  ))}
                 </div>
               </div>
-            ))}
+            ); })}
             <div className="flex gap-2 items-center lg:hidden pt-2"><ViewSwitch /><button type="button" onClick={() => setLang(getLang() === 'ar' ? 'en' : 'ar')} className="glass-pill px-4 py-2 text-xs font-bold" translate="no">{getLang() === 'ar' ? 'English' : 'العربية'}</button><button type="button" onClick={logout} className="glass-pill px-4 py-2 text-xs font-bold">Sign out</button></div>
           </div>
         </div>, document.body)}

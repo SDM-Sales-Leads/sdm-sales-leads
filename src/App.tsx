@@ -27,6 +27,7 @@ import { OldViewShell } from './components/OldViewShell';
 import { GlassShell } from './components/GlassShell';
 import { GlassHome } from './components/GlassHome';
 import { MobileTabBar } from './components/MobileTabBar';
+import { GroupTabs } from './components/GroupTabs';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
 const AppContent: React.FC = () => {
@@ -41,11 +42,12 @@ const AppContent: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const viewMode = useViewMode(user?.id);
 
-  // choosing the Glass look lands on its home; leaving it never leaves the (Glass-only) home page open
+  // the first page for everybody who works with leads is Home (the day at a glance), in every look
   useEffect(() => {
-    if (viewMode === 'glass') setActiveTab((t) => (t === 'dashboard' ? 'glass-home' : t));
-    else setActiveTab((t) => (t === 'glass-home' ? 'dashboard' : t));
-  }, [viewMode]);
+    if (!user || !permissions) return;
+    if (user.role === 'Requester') return;
+    if ((permissions as any).canViewSalesCrm || (permissions as any).canViewSalesLeads) setActiveTab((t) => (t === 'dashboard' ? 'glass-home' : t));
+  }, [user?.id, permissions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // open a lead from anywhere: the bell, or the link in an e-mail (https://.../#lead=LD-1234, works after sign-in)
   useEffect(() => {
@@ -164,6 +166,7 @@ const AppContent: React.FC = () => {
 
   const pageContent = (
     <ErrorBoundary resetKey={`${activeTab}|${crmSubTab}`}>
+            {!selectedTicket && <GroupTabs activeTab={activeTab} crmSubTab={crmSubTab} go={(tab, sub) => { setActiveTab(tab); setSelectedTicket(null); if (sub) setCrmSubTab(sub); }} />}
             <Suspense fallback={<div className="p-8 text-sm text-brand-gray">Loading…</div>}>
               <motion.div
                 key={selectedTicket ? `detail-${selectedTicket.id}` : activeTab}

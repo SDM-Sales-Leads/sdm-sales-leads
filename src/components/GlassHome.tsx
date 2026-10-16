@@ -82,7 +82,7 @@ export const GlassHome: React.FC = () => {
       </div>
 
       <div>
-        <div className="flex items-center justify-between mb-2.5"><h3 className="font-bold text-white text-[15px] border-l-[3px] border-brand-red pl-2.5">My day</h3></div>
+        <div className="flex items-center justify-between mb-2.5"><h3 className="glass-home-h font-bold text-[15px] border-l-[3px] border-brand-red pl-2.5">My day</h3></div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {strip('Call first', 'New leads nobody has contacted yet', d.fresh.length, d.fresh)}
           {strip('Follow up today', 'Follow-ups due today or overdue', d.due.length, d.due, true)}
